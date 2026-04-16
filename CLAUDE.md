@@ -52,7 +52,6 @@
 | 116 | openclaw | running | 192.168.0.55 | 8 GB | 8 | 100 GB |
 | 117 | stable-diffusion | running | 192.168.0.117 | 16 GB | 8 | 100 GB |
 | 118 | ollama | running | 192.168.0.118 | 36 GB | 8 | 200 GB |
-| 119 | todo-app | running | 192.168.0.235 | 2 GB | 2 | 20 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 121 | plane | running | 192.168.0.121 | 8 GB | 4 | 50 GB |
 | 122 | docker-swarm-worker | running | 192.168.0.237 | 8 GB | 8 | 50 GB |
@@ -62,6 +61,7 @@
 | VMID | Name | Status | RAM | Disks |
 |------|------|--------|-----|-------|
 | 115 | win11 | stopped | 4 GB | 100+100+100 GB |
+| 123 | ubuntu | running | 8 GB | 100 GB |
 
 ### LXC Templates
 
@@ -77,7 +77,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100), Mail (102)
 - **Docker Swarm:** Manager (109) + 2 workers (110, 122)
-- **Apps:** OpenClaw (116), Todo-app (119), Plane project mgmt (121)
+- **Apps:** OpenClaw (116), Plane project mgmt (121)
 
 ---
 
@@ -106,7 +106,6 @@ When deploying a new service, clone the appropriate template based on whether th
 | planer.lan | `@` | 192.168.0.7 | Traefik |
 | proxmox.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS, insecureSkipVerify to PVE:8006) |
 | s3.lan | `@` + `*` (wildcard) | 192.168.0.5 | Direct |
-| todo.lan | `@` | 192.168.0.7 | Traefik |
 
 ---
 
@@ -139,6 +138,5 @@ When deploying a new service, clone the appropriate template based on whether th
 | planer.yml | planer.lan | 192.168.0.121 (plane) | 80 | no |
 | proxmox.yml | proxmox.lan | 192.168.0.15 (PVE) | 8006 | yes |
 | registry.yml | registry.docker.lan | 192.168.0.27 (registry) | 5000 | no |
-| todo.yml | todo.lan | 192.168.0.235 (todo-app) | 80 | no |
 | tls.yml | — | — | — | cert config for openclaw.lan, proxmox.lan |
 | transports.yml | — | — | — | proxmoxTransport (insecureSkipVerify) |
