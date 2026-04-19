@@ -28,7 +28,7 @@
 ### Networking
 
 - **Bridge:** vmbr0 on enp129s0 — 192.168.0.15/24, gateway 192.168.0.1
-- **WiFi:** wlp130s0f0 — 192.168.0.5/24
+- **WiFi:** wlp130s0f0 — link up, no IP (was 192.168.0.5/24, removed to resolve conflict with s3 LXC)
 
 ### LXC Containers
 

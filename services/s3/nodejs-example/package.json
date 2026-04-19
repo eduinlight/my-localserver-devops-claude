@@ -1,0 +1,17 @@
+{
+  "name": "garage-s3-nodejs-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal PUT/GET/LIST/DELETE example against the Garage S3 service on LXC 100.",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.658.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
