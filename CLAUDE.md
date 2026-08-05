@@ -52,20 +52,38 @@
 | 118 | ollama | running | 192.168.0.118 | 36 GB | 8 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 121 | plane | running | 192.168.0.121 | 8 GB | 4 | 50 GB |
+| 124 | github-runner | running | 192.168.0.28 | 4 GB | 4 | 40 GB |
 
 ### Virtual Machines
 
 | VMID | Name | Status | IP | RAM | Cores | Disks | Pool |
 |------|------|--------|-----|-----|-------|-------|------|
-| 115 | win11 | stopped | — | 4 GB | — | 100+100+100 GB | — |
-| 123 | ubuntu | **TEMPLATE** | — | 8 GB | 2 | 100 GB | — |
+| 102 | work-ubuntu-01 | stopped | — | 8 GB | 2 | 100 GB | work |
+| 115 | win11 | stopped | — | 4 GB | 4 | 100+100+100 GB | — |
+| 119 | work-ubuntu-02 | stopped | — | 8 GB | 2 | 100 GB | work |
+| 123 | ubuntu | **TEMPLATE** | — | 8 GB | 2 | 100 GB | work |
 | 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | 40 GB | kubernete |
 | 201 | k3s-w-01 | running | 192.168.0.61 | 6 GB | 2 | 60 GB | kubernete |
 | 202 | k3s-w-02 | running | 192.168.0.62 | 6 GB | 2 | 60 GB | kubernete |
-| 210 | swarm-mgr-01 | running | 192.168.0.65 | 2 GB | 2 | 30 GB | docker |
+| 210 | swarm-mgr-01 | running | 192.168.0.65 | 2 GB | 2 | 90 GB | docker |
 | 211 | swarm-w-01 | running | 192.168.0.66 | 6 GB | 4 | 60 GB | docker |
-| 212 | swarm-w-02 | running | 192.168.0.67 | 6 GB | 4 | 50 GB | docker |
+| 212 | swarm-w-02 | running | 192.168.0.67 | 6 GB | 4 | 60 GB | docker |
 | 9000 | k3s-template | **TEMPLATE** | — | 2 GB | 2 | 3 GB (cloud-init) | kubernete |
+
+### Resource Pools
+
+| Pool | Comment | Members |
+|------|---------|---------|
+| ansible | — | 109, 110 |
+| docker | Docker services | 103, 210, 211, 212 |
+| github | GitHub CI services | 124 |
+| gitlab | GitLab services | 105, 106, 107 |
+| ia | AI/ML services | 113, 117, 118 |
+| kubernete | k3s cluster + template | 200, 201, 202, 9000 |
+| tools | Tools and apps | 100, 104, 108, 114, 116, 120, 121 |
+| work | Work VMs and ubuntu template | 102, 119, 123 |
+
+Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --pool` is not valid).
 
 ### Templates
 
@@ -83,7 +101,8 @@ When deploying a new service, clone the appropriate template based on whether th
 
 ### Key Services
 
-- **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103)
+- **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runner (124)
+- **Kubernetes:** k3s cluster — cp (200) + 2 workers (201, 202), ArgoCD + dashboard in-cluster
 - **AI/ML:** Ollama (118, 36GB RAM), Ollama WebUI (113), Stable Diffusion (117)
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100), Mail (102)
@@ -112,7 +131,8 @@ When deploying a new service, clone the appropriate template based on whether th
 | git.lan | `@` | 192.168.0.23 | Direct to GitLab |
 | gitlab.lan | `@` | 192.168.0.7 | Traefik (port 8929) |
 | immich.lan | `@` | 192.168.0.26 | Direct |
-| k3s.lan | `@` → .60, `cp`, `w1`, `w2`, `api` (direct), `dashboard` → .7 | mixed | Direct to nodes; `dashboard` via Traefik |
+| k3s.lan | `@`, `cp`, `api` → .60, `w1` → .61, `w2` → .62 | direct | Cluster nodes |
+| k3s.lan | `dashboard`, `argocd` | 192.168.0.7 | Traefik → NodePort |
 | mail.lan | `@` | 192.168.0.6 | Direct, full mail records (DKIM, SPF, DMARC, SRV) |
 | media.lan | `@`, `request`, `radar`, `sonar`, `qbittorrent` | 192.168.0.7 | Traefik, subdomains are CNAMEs |
 | openclaw.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS) |
@@ -153,6 +173,7 @@ When deploying a new service, clone the appropriate template based on whether th
 | registry.yml | registry.docker.lan | 192.168.0.27 (registry) | 5000 | no |
 | mirror.yml | mirror.docker.lan | 192.168.0.27 (registry-mirror) | 5001 | no |
 | dashboard.yml | dashboard.k3s.lan | 192.168.0.60 (k3s cp NodePort) | 30443 | yes (HTTPS frontend, HTTPS backend with insecureSkipVerify via `dashboardTransport` defined inline) |
+| argocd.yml | argocd.k3s.lan | 192.168.0.60 (k3s-cp-01 NodePort) | 30080 | no |
 | tls.yml | — | — | — | cert config for openclaw.lan, proxmox.lan, registry.docker.lan, dashboard.k3s.lan |
 | transports.yml | — | — | — | proxmoxTransport (insecureSkipVerify) |
 
@@ -224,3 +245,40 @@ Built 2026-04 alongside Docker Swarm. Standalone k3s, not coupled with Swarm.
   - `dash-token` — copies the permanent admin token to the X11 clipboard, ready to paste.
   - The token is a non-expiring ServiceAccount Secret (`dashboard-admin-token` in `kubernetes-dashboard` ns) bound via ClusterRoleBinding to `cluster-admin`.
 - Re-fetch the token any time with: `kubectl -n kubernetes-dashboard get secret dashboard-admin-token -o jsonpath='{.data.token}' | base64 -d`.
+
+### ArgoCD
+
+- **URL:** http://argocd.k3s.lan (admin / see `argocd-initial-admin-secret`)
+- **Version:** v3.5.0, namespace `argocd`
+- **Exposure:** `argocd-server` Service is NodePort 30080 (http) / 30081 (https)
+- **Insecure mode:** `server.insecure=true` in `argocd-cmd-params-cm` so Traefik terminates plain HTTP
+- **Target cluster:** the built-in `in-cluster` destination (`https://kubernetes.default.svc`)
+- **CLI:** `argocd login argocd.k3s.lan --plaintext`
+
+Retrieve the initial admin password:
+
+```
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+```
+
+The `applicationsets.argoproj.io` CRD exceeds the annotation size limit for client-side apply.
+Install or upgrade it with `kubectl apply --server-side --force-conflicts`.
+
+---
+
+## GitHub Actions Runner (VMID 124)
+
+- **IP:** 192.168.0.28
+- **Pool:** github
+- **Base:** cloned from LXC template 101 (docker), Docker 28.1.1 available for container jobs
+- **Runner:** actions/runner v2.336.0 at `/opt/actions-runner`, runs as the `runner` user (in `docker` group)
+- **Access:** `ssh root@192.168.0.15` then `pct exec 124 -- bash -c '...'`
+
+Register against a repo or org with a token from
+*Settings → Actions → Runners → New self-hosted runner*:
+
+```
+pct exec 124 -- /opt/actions-runner/register.sh <github-url> <registration-token> [name] [labels]
+```
+
+Registration tokens expire about an hour after they are issued.
