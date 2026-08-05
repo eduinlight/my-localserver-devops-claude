@@ -274,6 +274,17 @@ Install or upgrade it with `kubectl apply --server-side --force-conflicts`.
 - **Runner:** actions/runner v2.336.0 at `/opt/actions-runner`, runs as the `runner` user (in `docker` group)
 - **Access:** `ssh root@192.168.0.15` then `pct exec 124 -- bash -c '...'`
 
+### Current registration
+
+- **Registered to org:** `eduinlight-org` (org-level runner; personal accounts can't have account-wide runners)
+- **Runner name:** `github-runner-lxc124`
+- **Labels:** `self-hosted,linux,x64,docker,proxmox,homelab`
+- **Service:** `actions.runner.eduinlight-org.github-runner-lxc124.service` — active + enabled (auto-starts on boot, reconnects on its own)
+- **Status check:** `pct exec 124 -- systemctl status actions.runner.eduinlight-org.github-runner-lxc124.service` or `journalctl -u actions.runner.eduinlight-org.github-runner-lxc124.service -n 20`
+- Target it in workflows with `runs-on: [self-hosted, linux, x64]`. For a repo to use this org runner, allow it under org → Settings → Actions → Runner groups → repository access. `docker build`/container steps work; if a workflow pulls from Docker Hub, use the local mirror (`mirror.docker.lan`) to avoid the blackhole.
+
+### Re-registering
+
 Register against a repo or org with a token from
 *Settings → Actions → Runners → New self-hosted runner*:
 
