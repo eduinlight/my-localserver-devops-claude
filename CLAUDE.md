@@ -90,7 +90,7 @@ Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --po
 
 - **LXC 101 (docker)** — Template for services that run via Docker/docker-compose inside an LXC.
 - **LXC 112 (debian)** — Template for services that run natively via systemd (no Docker).
-- **VM 9000 (k3s-template)** — Debian 13 cloud-init template with `admin` user pre-baked (NOPASSWD sudo, password `REDACTED`, dev box SSH key). Use this for any new VM clone (k3s, swarm, anything Debian-based). **Do not pass `--ciuser`/`--cipassword` on `qm clone`** — values are baked into the image.
+- **VM 9000 (k3s-template)** — Debian 13 cloud-init template with `admin` user pre-baked (NOPASSWD sudo, dev box SSH key; password in `secrets.local.md`, untracked). Use this for any new VM clone (k3s, swarm, anything Debian-based). **Do not pass `--ciuser`/`--cipassword` on `qm clone`** — values are baked into the image.
 - **VM 123 (ubuntu)** — Older Ubuntu Server template (no cloud-init). Kept for compatibility; prefer 9000 for new builds.
 
 ### Proxmox Pools
@@ -216,7 +216,7 @@ Replaced the LXC-based swarm (formerly VMIDs 109/110/122) with VMs in 2026-04 to
 - **Manager:** VM 210 `swarm-mgr-01` — **192.168.0.65** (Docker 29.4.1, Swarm Leader)
 - **Workers:** VM 211 `swarm-w-01` (.66, has-postgres-data=true label, runs postgres+redis), VM 212 `swarm-w-02` (.67)
 - **Pool:** `docker` (also includes LXC 103 docker-registry)
-- **Login:** `ssh admin@192.168.0.65` (password `REDACTED`, NOPASSWD sudo)
+- **Login:** `ssh admin@192.168.0.65` (NOPASSWD sudo; password in `secrets.local.md`, untracked)
 - **Insecure registry:** `/etc/docker/daemon.json` on all 3 nodes has `{"insecure-registries":["registry.docker.lan"]}` so pulls from the local registry (LXC 103) work over HTTP.
 - **Stacks running:** `caxper-uat` (10 services) + `tel-bot-youtube-downloader` (1 service).
 - **Stack source of truth:** `swarm-stacks/*.yml` in this repo (reverse-engineered from old swarm during migration; no compose files existed before).
@@ -236,7 +236,7 @@ Built 2026-04 alongside Docker Swarm. Standalone k3s, not coupled with Swarm.
 - **Workers:** VM 201 `k3s-w-01` (.61), VM 202 `k3s-w-02` (.62)
 - **Template:** VM 9000 `k3s-template` (Debian 13 cloud-init, reusable for any new VM)
 - **Pool:** `kubernete`
-- **Login:** `ssh admin@192.168.0.60` (password `REDACTED`, NOPASSWD sudo)
+- **Login:** `ssh admin@192.168.0.60` (NOPASSWD sudo; password in `secrets.local.md`, untracked)
 - **kubectl:** Dev box `~/.kube/config` is a symlink to `~/.kube/k3s-home.yaml` (server: 192.168.0.60:6443). `kubectl get nodes` works directly.
 - **Built-in Traefik disabled** at install time (`--disable=traefik`) — homelab Traefik on LXC 114 handles ingress. `klipper-lb` (k3s ServiceLB) is kept.
 
@@ -298,7 +298,9 @@ Ingest ports are published straight off the LXC, not proxied — OTLP gRPC needs
 end and agents have no reason to traverse Traefik.
 
 Grafana runs with the image default of **anonymous access at Admin role** (no login prompt);
-an `admin` / `REDACTED` account also exists for API use. Set
+an `admin` account also exists for API use, with its password supplied via
+`GF_SECURITY_ADMIN_PASSWORD` in `/home/admin/.env` on the LXC (see `services/lgtm/.env.example`;
+value in `secrets.local.md`, untracked). Set
 `GF_AUTH_ANONYMOUS_ENABLED=false` in the compose environment to require login.
 
 Point services at it with:

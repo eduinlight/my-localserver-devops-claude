@@ -27,9 +27,19 @@ needs h2c end to end, and telemetry agents have no reason to go through the prox
 ## Auth
 
 Grafana keeps the image default of **anonymous access with the Admin role**, so the UI
-opens without a login. A real admin account also exists (`admin` / `REDACTED`) for API
-calls. To require a login, add `GF_AUTH_ANONYMOUS_ENABLED=false` to the compose
-environment and recreate the container.
+opens without a login. A real admin account also exists for API calls; its credentials
+come from a `.env` file sitting next to `docker-compose.yaml` (see `.env.example`) and
+are **not** stored in this repo — copy them from `secrets.local.md` on the dev box or
+your password manager:
+
+```sh
+cp .env.example .env   # then fill in GF_SECURITY_ADMIN_PASSWORD
+docker compose up -d
+```
+
+Compose refuses to start if `GF_SECURITY_ADMIN_PASSWORD` is unset. To require a login
+for the UI too, add `GF_AUTH_ANONYMOUS_ENABLED=false` to the compose environment and
+recreate the container.
 
 ## Sending telemetry
 
@@ -56,6 +66,9 @@ lives under `/data` in the container, backed by the named volume `admin_lgtm-dat
 Retention is whatever each component defaults to — no retention policy has been tuned.
 
 ## Operations
+
+The LXC needs `/home/admin/.env` alongside `/home/admin/docker-compose.yaml` — compose
+reads it automatically and refuses to start without `GF_SECURITY_ADMIN_PASSWORD`.
 
 ```sh
 ssh root@192.168.0.15
