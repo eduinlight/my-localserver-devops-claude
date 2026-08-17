@@ -1,0 +1,29 @@
+services:
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: lgtm
+    restart: unless-stopped
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "4317:4317"   # OTLP gRPC ingest
+      - "4318:4318"   # OTLP HTTP ingest
+      - "3100:3100"   # Loki API
+      - "3200:3200"   # Tempo API
+      - "9090:9090"   # Prometheus API
+      - "4040:4040"   # Pyroscope
+    environment:
+      - GF_SERVER_ROOT_URL=http://grafana.lan
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=REDACTED
+      - ENABLE_LOGS_ALL=true
+    volumes:
+      - lgtm-data:/data
+    healthcheck:
+      test: ["CMD", "/otel-lgtm/docker/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  lgtm-data:

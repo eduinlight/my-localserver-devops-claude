@@ -52,6 +52,7 @@
 | 118 | ollama | running | 192.168.0.118 | 36 GB | 8 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 121 | plane | running | 192.168.0.121 | 8 GB | 4 | 50 GB |
+| 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
 | 124 | github-runner | running | 192.168.0.28 | 4 GB | 4 | 40 GB |
 
 ### Virtual Machines
@@ -80,7 +81,7 @@
 | gitlab | GitLab services | 105, 106, 107 |
 | ia | AI/ML services | 113, 117, 118 |
 | kubernete | k3s cluster + template | 200, 201, 202, 9000 |
-| tools | Tools and apps | 100, 104, 108, 114, 116, 120, 121 |
+| tools | Tools and apps | 100, 104, 108, 114, 116, 120, 121, 122 |
 | work | Work VMs and ubuntu template | 102, 119, 123 |
 
 Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --pool` is not valid).
@@ -106,6 +107,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **AI/ML:** Ollama (118, 36GB RAM), Ollama WebUI (113), Stable Diffusion (117)
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100), Mail (102)
+- **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** Manager 210 (192.168.0.65) + workers 211/212 — see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202 — see "## k3s Cluster" section below.
 - **Apps:** OpenClaw (116), Plane project mgmt (121)
@@ -130,6 +132,7 @@ When deploying a new service, clone the appropriate template based on whether th
 | docker.lan | `@` → .27, `registry` → .7, `mirror` → .7 | mixed | Apex direct to registry LXC, `registry`/`mirror` via Traefik (mirror = Docker Hub pull-through cache) |
 | git.lan | `@` | 192.168.0.23 | Direct to GitLab |
 | gitlab.lan | `@` | 192.168.0.7 | Traefik (port 8929) |
+| grafana.lan | `@` → .7 (Traefik); `otlp`, `loki`, `tempo`, `prom` → 192.168.0.122 | mixed | UI via Traefik, ingest/component APIs direct to LGTM LXC |
 | immich.lan | `@` | 192.168.0.26 | Direct |
 | k3s.lan | `@`, `cp`, `api` → .60, `w1` → .61, `w2` → .62 | direct | Cluster nodes |
 | k3s.lan | `dashboard`, `argocd` | 192.168.0.7 | Traefik → NodePort |
@@ -162,6 +165,7 @@ When deploying a new service, clone the appropriate template based on whether th
 | images-api.yml | api.images.ai.lan | 192.168.0.117 | 7866 | no |
 | books.yml | books.lan | 192.168.0.120 (calibre-web) | 8083 | no |
 | gitlab.yml | gitlab.lan | 192.168.0.23 (gitlab) | 8929 | no |
+| grafana.yml | grafana.lan | 192.168.0.122 (lgtm) | 3000 | no |
 | media.yml | media.lan | 192.168.0.22 (media) | 8096 | no |
 | radar.yml | radar.media.lan | 192.168.0.22 | 7878 | no |
 | sonar.yml | sonar.media.lan | 192.168.0.22 | 8989 | no |
@@ -263,6 +267,49 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.pas
 
 The `applicationsets.argoproj.io` CRD exceeds the annotation size limit for client-side apply.
 Install or upgrade it with `kubectl apply --server-side --force-conflicts`.
+
+---
+
+## LGTM Observability Stack (VMID 122)
+
+All-in-one observability backend from the `grafana/otel-lgtm` Docker Hub image — Grafana,
+Loki (logs), Tempo (traces), Prometheus (metrics), Pyroscope (profiles), fronted by an
+OpenTelemetry Collector. Cloned from LXC template 101 (docker).
+
+- **IP:** 192.168.0.122, pool `tools`, 4 cores / 8 GB / 40 GB
+- **Access:** `ssh root@192.168.0.15` then `pct exec 122 -- bash -c '...'`
+- **Compose file:** `/home/admin/docker-compose.yaml` (mirrored in this repo at `services/lgtm/`)
+- **Data:** single named volume `admin_lgtm-data` mounted at `/data` — holds Grafana DB/plugins,
+  Loki chunks, Tempo blocks, Prometheus TSDB and Pyroscope. No retention tuning applied.
+- **Registry:** `/etc/docker/daemon.json` points at `mirror.docker.lan`; pulling this image
+  without the mirror hangs (Docker Hub CDN is blackholed by the ISP).
+
+| Purpose | Address |
+|---------|---------|
+| Grafana UI | http://grafana.lan (Traefik) / 192.168.0.122:3000 |
+| OTLP gRPC ingest | `otlp.grafana.lan:4317` |
+| OTLP HTTP ingest | `http://otlp.grafana.lan:4318` |
+| Loki API | `http://loki.grafana.lan:3100` |
+| Tempo API | `http://tempo.grafana.lan:3200` |
+| Prometheus API | `http://prom.grafana.lan:9090` |
+| Pyroscope | `http://192.168.0.122:4040` |
+
+Ingest ports are published straight off the LXC, not proxied — OTLP gRPC needs h2c end to
+end and agents have no reason to traverse Traefik.
+
+Grafana runs with the image default of **anonymous access at Admin role** (no login prompt);
+an `admin` / `REDACTED` account also exists for API use. Set
+`GF_AUTH_ANONYMOUS_ENABLED=false` in the compose environment to require login.
+
+Point services at it with:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otlp.grafana.lan:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=<service>
+```
+
+Health check: `pct exec 122 -- docker exec lgtm /otel-lgtm/docker/healthcheck.sh`
 
 ---
 
