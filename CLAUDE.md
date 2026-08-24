@@ -22,8 +22,34 @@
 
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
-| local | dir | ~94 GB | ~20 GB | ~69 GB | 21.6% |
-| local-lvm | lvmthin | ~1.7 TB | ~1.1 TB | ~614 GB | 64.1% |
+| local | dir | ~94 GB | ~33 GB | ~57 GB | 35.0% |
+| local-lvm | lvmthin | ~1.7 TB | ~1.53 TB | ~176 GB | ~91% |
+
+**`local-lvm` is thin-overcommitted and runs close to full** — provisioned volumes
+sum to ~3.67 TB against a 1.71 TB pool. If `data_percent` reaches 100% every guest
+on it starts throwing I/O errors and thin metadata can corrupt. Check with
+`lvs --units g -o lv_name,lv_size,data_percent pve/data`.
+
+Guests do not return freed blocks to the pool on their own unless the volume has
+`discard=on` (the k3s/swarm VMs do; most LXCs and VMs 102/115/119/123 do not).
+A periodic trim recovers a surprising amount — this reclaimed ~147 GB in Aug 2026:
+
+```sh
+for c in $(pct list | awk 'NR>1 {print $1}'); do pct fstrim $c; done   # on the PVE host
+ssh admin@192.168.0.6X 'sudo fstrim -av'                               # VMs with discard=on
+```
+
+Templates 101/112 fail with `Read-only file system` — expected, harmless.
+
+**RAM is the other tight resource.** 62 GB total; VM memory is *reserved* while LXC
+memory is only a *cap*. Running VMs reserve ~38 GB and LXC 105 (gitlab) alone holds
+~15 GB, so the host sits near capacity and swap stays full. Check real usage before
+adding or growing a VM:
+
+```sh
+free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
+  pct exec $c -- free -m 2>/dev/null | awk -v c=$c '/Mem:/ {print c, $3" MB"}'; done
+```
 
 ### Networking
 
@@ -36,7 +62,6 @@
 |------|------|--------|-----|-----|-------|------|
 | 100 | s3 | running | 192.168.0.5 | 512 MB | 1 | 8 GB |
 | 101 | docker | **TEMPLATE** | — | 512 MB | 1 | — |
-| 102 | mail | running | 192.168.0.6 | 512 MB | 8 | 8 GB |
 | 103 | docker-registry | running | 192.168.0.27 | 2 GB | 4 | 100 GB |
 | 104 | media | running | 192.168.0.22 | 8 GB | 4 | 20+512+812 GB |
 | 105 | gitlab | running | 192.168.0.23 | 16 GB | 16 | 200 GB |
@@ -47,22 +72,22 @@
 | 112 | debian | **TEMPLATE** | — | 512 MB | 8 | — |
 | 113 | ollama-webui | running | 192.168.0.51 | 512 MB | 8 | 58 GB |
 | 114 | traefik | running | 192.168.0.7 | 512 MB | 1 | 8 GB |
-| 116 | openclaw | running | 192.168.0.55 | 8 GB | 8 | 100 GB |
 | 117 | stable-diffusion | running | 192.168.0.117 | 16 GB | 8 | 100 GB |
 | 118 | ollama | running | 192.168.0.118 | 36 GB | 8 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
-| 121 | plane | running | 192.168.0.121 | 8 GB | 4 | 50 GB |
 | 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
-| 124 | github-runner | running | 192.168.0.28 | 4 GB | 4 | 40 GB |
+| 124 | github-runner | running | 192.168.0.28 | 8 GB | 4 | 100 GB |
 
 ### Virtual Machines
 
 | VMID | Name | Status | IP | RAM | Cores | Disks | Pool |
 |------|------|--------|-----|-----|-------|-------|------|
 | 102 | work-ubuntu-01 | stopped | — | 8 GB | 2 | 100 GB | work |
-| 115 | win11 | stopped | — | 4 GB | 4 | 100+100+100 GB | — |
+| 115 | win11 | **TEMPLATE** | — | 4 GB | 4 | 100 GB (+2 unused) | — |
 | 119 | work-ubuntu-02 | stopped | — | 8 GB | 2 | 100 GB | work |
 | 123 | ubuntu | **TEMPLATE** | — | 8 GB | 2 | 100 GB | work |
+| 125 | gh-runner-windows | running | 192.168.0.244 | 8 GB (balloon 4) | 8 | 150 GB | github |
+| 126 | mac-runner | running | 192.168.0.245 | 8 GB | 4 | 80 GB | github |
 | 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | 40 GB | kubernete |
 | 201 | k3s-w-01 | running | 192.168.0.61 | 6 GB | 2 | 60 GB | kubernete |
 | 202 | k3s-w-02 | running | 192.168.0.62 | 6 GB | 2 | 60 GB | kubernete |
@@ -75,13 +100,12 @@
 
 | Pool | Comment | Members |
 |------|---------|---------|
-| ansible | — | 109, 110 |
 | docker | Docker services | 103, 210, 211, 212 |
-| github | GitHub CI services | 124 |
+| github | GitHub CI services | 124, 125, 126 |
 | gitlab | GitLab services | 105, 106, 107 |
 | ia | AI/ML services | 113, 117, 118 |
 | kubernete | k3s cluster + template | 200, 201, 202, 9000 |
-| tools | Tools and apps | 100, 104, 108, 114, 116, 120, 121, 122 |
+| tools | Tools and apps | 100, 104, 108, 114, 120, 122 |
 | work | Work VMs and ubuntu template | 102, 119, 123 |
 
 Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --pool` is not valid).
@@ -102,15 +126,14 @@ When deploying a new service, clone the appropriate template based on whether th
 
 ### Key Services
 
-- **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runner (124)
+- **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runners — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
 - **Kubernetes:** k3s cluster — cp (200) + 2 workers (201, 202), ArgoCD + dashboard in-cluster
 - **AI/ML:** Ollama (118, 36GB RAM), Ollama WebUI (113), Stable Diffusion (117)
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
-- **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100), Mail (102)
+- **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100)
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** Manager 210 (192.168.0.65) + workers 211/212 — see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202 — see "## k3s Cluster" section below.
-- **Apps:** OpenClaw (116), Plane project mgmt (121)
 
 ---
 
@@ -136,10 +159,10 @@ When deploying a new service, clone the appropriate template based on whether th
 | immich.lan | `@` | 192.168.0.26 | Direct |
 | k3s.lan | `@`, `cp`, `api` → .60, `w1` → .61, `w2` → .62 | direct | Cluster nodes |
 | k3s.lan | `dashboard`, `argocd` | 192.168.0.7 | Traefik → NodePort |
-| mail.lan | `@` | 192.168.0.6 | Direct, full mail records (DKIM, SPF, DMARC, SRV) |
+| mail.lan | `@` | 192.168.0.6 | ⚠️ **ORPHANED** — target host is gone. Zone still has full mail records (DKIM, SPF, DMARC, SRV); kept in case mail is rebuilt |
 | media.lan | `@`, `request`, `radar`, `sonar`, `qbittorrent` | 192.168.0.7 | Traefik, subdomains are CNAMEs |
-| openclaw.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS) |
-| planer.lan | `@` | 192.168.0.7 | Traefik |
+| openclaw.lan | `@` | 192.168.0.7 | ⚠️ **ORPHANED** — LXC 116 removed Aug 2026; resolves to Traefik, which 502s |
+| planer.lan | `@` | 192.168.0.7 | ⚠️ **ORPHANED** — LXC 121 removed Aug 2026; resolves to Traefik, which 502s |
 | proxmox.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS, insecureSkipVerify to PVE:8006) |
 | s3.lan | `@` + `*` (wildcard) | 192.168.0.5 | Direct |
 
@@ -171,8 +194,8 @@ When deploying a new service, clone the appropriate template based on whether th
 | sonar.yml | sonar.media.lan | 192.168.0.22 | 8989 | no |
 | qbittorrent.yml | qbittorrent.media.lan | 192.168.0.22 | 8080 | no |
 | seer.yml | request.media.lan | 192.168.0.22 | 5055 | no |
-| openclaw.yml | openclaw.lan | 192.168.0.55 (openclaw) | 18789 | yes |
-| planer.yml | planer.lan | 192.168.0.121 (plane) | 80 | no |
+| openclaw.yml | openclaw.lan | 192.168.0.55 — ⚠️ **DEAD** | 18789 | yes |
+| planer.yml | planer.lan | 192.168.0.121 — ⚠️ **DEAD** | 80 | no |
 | proxmox.yml | proxmox.lan | 192.168.0.15 (PVE) | 8006 | yes |
 | registry.yml | registry.docker.lan | 192.168.0.27 (registry) | 5000 | no |
 | mirror.yml | mirror.docker.lan | 192.168.0.27 (registry-mirror) | 5001 | no |
@@ -180,6 +203,12 @@ When deploying a new service, clone the appropriate template based on whether th
 | argocd.yml | argocd.k3s.lan | 192.168.0.60 (k3s-cp-01 NodePort) | 30080 | no |
 | tls.yml | — | — | — | cert config for openclaw.lan, proxmox.lan, registry.docker.lan, dashboard.k3s.lan |
 | transports.yml | — | — | — | proxmoxTransport (insecureSkipVerify) |
+| k3s-dashboard.yml | dashboard.k3s.lan | 192.168.0.60 | 30443 | ⚠️ duplicates `dashboard.yml` — same Host rule, two routers |
+| spice.yml | — (`HostSNI(*)`) | — | — | TCP passthrough, undocumented |
+
+⚠️ `openclaw.yml` and `planer.yml` point at removed containers. Traefik keeps serving
+the routers, so those hosts return 502 rather than NXDOMAIN. Delete the route files
+and the matching DNS zones if those services are not coming back.
 
 ---
 
