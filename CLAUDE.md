@@ -22,8 +22,8 @@
 
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
-| local | dir | ~94 GB | ~33 GB | ~57 GB | 35.0% |
-| local-lvm | lvmthin | ~1.7 TB | ~1.53 TB | ~176 GB | ~91% |
+| local | dir | ~94 GB | ~60 GB | ~30 GB | 63.4% |
+| local-lvm | lvmthin | ~1.7 TB | ~1.59 TB | ~123 GB | ~92.8% |
 
 **`local-lvm` is thin-overcommitted and runs close to full** — provisioned volumes
 sum to ~3.67 TB against a 1.71 TB pool. If `data_percent` reaches 100% every guest
@@ -38,6 +38,13 @@ A periodic trim recovers a surprising amount — this reclaimed ~147 GB in Aug 2
 for c in $(pct list | awk 'NR>1 {print $1}'); do pct fstrim $c; done   # on the PVE host
 ssh admin@192.168.0.6X 'sudo fstrim -av'                               # VMs with discard=on
 ```
+
+The VM half must be run **from the dev box**, not the PVE host — the `admin` SSH
+key lives on the dev box and the host cannot authenticate to the VMs.
+
+Consolidating the AI pool in Aug 2026 (three LXCs → one) took the pool from 97.4%
+back to ~92%, mostly by destroying LXC 117, which held ~70 GB of dead Fooocus and
+forge trees plus two duplicate 7 GB copies of the same SDXL checkpoint.
 
 Templates 101/112 fail with `Read-only file system` — expected, harmless.
 
@@ -70,10 +77,8 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | 108 | immich | running | 192.168.0.26 | 8 GB | 4 | 208 GB |
 | 111 | dns | running | 192.168.0.21 | 512 MB | 8 | 8 GB |
 | 112 | debian | **TEMPLATE** | — | 512 MB | 8 | — |
-| 113 | ollama-webui | running | 192.168.0.51 | 512 MB | 8 | 58 GB |
 | 114 | traefik | running | 192.168.0.7 | 512 MB | 1 | 8 GB |
-| 117 | stable-diffusion | running | 192.168.0.117 | 16 GB | 8 | 100 GB |
-| 118 | ollama | running | 192.168.0.118 | 36 GB | 8 | 200 GB |
+| 118 | ai | running | 192.168.0.118 | 24 GB | 12 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
 | 124 | github-runner | running | 192.168.0.28 | 8 GB | 4 | 100 GB |
@@ -103,7 +108,7 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | docker | Docker services | 103, 210, 211, 212 |
 | github | GitHub CI services | 124, 125, 126 |
 | gitlab | GitLab services | 105, 106, 107 |
-| ia | AI/ML services | 113, 117, 118 |
+| ia | AI/ML services | 118 |
 | kubernete | k3s cluster + template | 200, 201, 202, 9000 |
 | tools | Tools and apps | 100, 104, 108, 114, 120, 122 |
 | work | Work VMs and ubuntu template | 102, 119, 123 |
@@ -128,7 +133,7 @@ When deploying a new service, clone the appropriate template based on whether th
 
 - **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runners — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
 - **Kubernetes:** k3s cluster — cp (200) + 2 workers (201, 202), ArgoCD + dashboard in-cluster
-- **AI/ML:** Ollama (118, 36GB RAM), Ollama WebUI (113), Stable Diffusion (117)
+- **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100)
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
@@ -149,7 +154,7 @@ When deploying a new service, clone the appropriate template based on whether th
 
 | Zone | A Record | Target | Notes |
 |------|----------|--------|-------|
-| ai.lan | `@`, `images`, `fooocus`, `api.images` | 192.168.0.7 | Traefik |
+| ai.lan | `@`, `images` | 192.168.0.7 | Traefik → LXC 118. `fooocus`/`api.images` removed Aug 2026 |
 | books.lan | `@` | 192.168.0.7 | Traefik |
 | dns.lan | `@` | 192.168.0.21 | Direct |
 | docker.lan | `@` → .27, `registry` → .7, `mirror` → .7 | mixed | Apex direct to registry LXC, `registry`/`mirror` via Traefik (mirror = Docker Hub pull-through cache) |
@@ -183,9 +188,8 @@ When deploying a new service, clone the appropriate template based on whether th
 
 | Config File | Host | Backend | Port | TLS |
 |-------------|------|---------|------|-----|
-| webui.yml | ai.lan | 192.168.0.51 (ollama-webui) | 3000 | no |
-| images.yml | images.ai.lan | 192.168.0.117 (stable-diff) | 7865 | no |
-| images-api.yml | api.images.ai.lan | 192.168.0.117 | 7866 | no |
+| webui.yml | ai.lan | 192.168.0.118 (llama-swap) | 8080 | no |
+| images.yml | images.ai.lan | 192.168.0.118 (ComfyUI) | 8188 | no |
 | books.yml | books.lan | 192.168.0.120 (calibre-web) | 8083 | no |
 | gitlab.yml | gitlab.lan | 192.168.0.23 (gitlab) | 8929 | no |
 | grafana.yml | grafana.lan | 192.168.0.122 (lgtm) | 3000 | no |
@@ -296,6 +300,83 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.pas
 
 The `applicationsets.argoproj.io` CRD exceeds the annotation size limit for client-side apply.
 Install or upgrade it with `kubectl apply --server-side --force-conflicts`.
+
+---
+
+## AI Stack (VMID 118)
+
+Single **privileged** LXC holding everything that touches the GPU. Replaced the
+three-container `ia` pool (113 `ollama-webui`, 117 `stable-diffusion`, 118
+`ollama`) in Aug 2026. Full detail in `services/ai/README.md`.
+
+- **IP:** 192.168.0.118, pool `ia`, 12 cores / 24 GB cap / 200 GB
+- **Access:** `ssh root@192.168.0.15` then `pct exec 118 -- bash -c '...'`
+- **Compose file:** `/home/admin/docker-compose.yaml` (mirrored at `services/ai/`)
+- **GPU:** RTX 3050, **6144 MiB** — the binding constraint on everything here
+
+| Purpose | Address |
+|---------|---------|
+| Chat UI + OpenAI API | http://ai.lan (redirects to `/ui`) |
+| OpenAI API direct | `http://192.168.0.118:8080/v1/...` |
+| ComfyUI | http://images.ai.lan (only while running) |
+
+Models (`/srv/models`, all fully offloaded): `qwen3.5` (IQ4_XS, ~5034 MiB,
+~30 tok/s), `qwen2.5` (Q4_K_M, ~4634 MiB, ~32 tok/s), `bge-m3` (embeddings,
+~687 MiB). SDXL renders 1024×1024/15 steps in ~26 s warm.
+
+### Why the GPU stays on LXC, not a VM
+
+Passing the GPU to a VM means vfio-binding it: the host must blacklist the nvidia
+driver, `nvidia-smi` on PVE stops working, and **no LXC can ever use the GPU
+again**. VM memory is also *reserved* rather than capped, and the host runs near
+its 62 GB. Sharing between LXCs was never the problem — 117 and 118 both had
+working passthrough at once. The real constraint is 6 GB of VRAM with no
+arbitration.
+
+### VRAM arbitration
+
+Only one workload holds the card. llama-swap runs exactly one model and swaps on
+request (~5 s); each model has `ttl: 600` so the card frees itself when idle
+(llama.cpp has no keep-alive of its own). ComfyUI sits behind a compose profile
+so it never starts on boot, and `ai-gpu` does the handoff:
+
+```sh
+pct exec 118 -- /usr/local/bin/ai-gpu status      # who holds the GPU
+pct exec 118 -- /usr/local/bin/ai-gpu comfy-up    # unload LLMs, start ComfyUI
+pct exec 118 -- /usr/local/bin/ai-gpu comfy-down  # give the card back
+```
+
+(`pct exec` has a minimal PATH — use the absolute path.)
+
+### Gotchas that will bite again
+
+- **runc must stay 1.3.x.** `containerd.io` 2.x ships runc 1.4.x, which writes
+  `net.ipv4.ip_unprivileged_port_start` at init; LXC blocks it and *every*
+  container fails with `reopen fd 8: permission denied`. `containerd.io` is held
+  at `1.7.28`, docker-ce at `28.5.2`. All the Docker LXCs on this host are on
+  1.7.x for this reason.
+- **GPU needs `--gpus all` *and* an explicit `devices:` list.** `no-cgroups = true`
+  is required in LXC but makes nvidia-container-cli skip device cgroup setup, so
+  runc never grants access → `Failed to initialize NVML: Unknown Error`.
+- **Host driver is 580.178.04 / CUDA 13.0**, installed via `.run` **with `--dkms`**
+  so it survives kernel upgrades. The LXC carries the same version's userspace
+  (`--no-kernel-module`) and **must be re-run after any host driver change**.
+  Installer kept at `/root/ai-backups/`.
+- The old 550.90.07 (CUDA 12.4) driver was too old for current llama.cpp images
+  (need 12.8+). `NVIDIA_DISABLE_REQUIRE=1` does not help — CUDA forward
+  compatibility is datacenter-GPU only. Vulkan silently falls back to CPU (the
+  `.run` installer ships no ICD loader).
+- **llama-swap's config is mounted as a directory, not a file.** A single-file
+  bind mount pins an inode, so `vim`/`sed -i`/`pct push` leave the container
+  reading the old copy and config changes silently do nothing.
+- **Ollama GGUFs are not always portable.** `qwen2.5`/`bge-m3` moved to llama.cpp
+  by hardlink, but ollama's `qwen3.5` uses its own engine metadata
+  (`qwen35.rope.dimension_sections` length 3 vs llama.cpp's 4) and had to be
+  re-downloaded from Hugging Face.
+
+Backups on the PVE host: `/root/ai-backups/` (open-webui chat DB, old LXC configs,
+driver installer) and `/var/lib/vz/dump/vzdump-lxc-118-2026_08_26-12_11_40.tar.zst`
+(22 GB, 118's pre-migration ollama state).
 
 ---
 

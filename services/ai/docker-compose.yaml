@@ -1,0 +1,78 @@
+# AI stack for LXC 118 (ai) — deployed to /home/admin/docker-compose.yaml
+#
+# GPU ACCESS IN LXC: the `deploy.resources.reservations.devices` block below is
+# the compose equivalent of `--gpus all`, but on its own it is NOT enough here.
+# /etc/nvidia-container-runtime/config.toml sets `no-cgroups = true` (required in
+# an LXC), which makes nvidia-container-cli skip device cgroup setup — so runc
+# never grants access and CUDA fails with "Failed to initialize NVML: Unknown
+# Error". The explicit `devices:` list is what adds the cgroup rules. Both blocks
+# are required; removing either breaks the GPU.
+
+services:
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda
+    container_name: llama-swap
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /srv/models:/models:ro
+      # Mount the DIRECTORY, not the file. A single-file bind mount pins an
+      # inode: any editor that writes a replacement file (vim, sed -i, a
+      # `pct push`) leaves the container still reading the old inode, so
+      # llama-swap's config watcher never sees the change and silently keeps
+      # running the previous settings.
+      - /srv/llama-swap:/etc/llama-swap/config:ro
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Image generation. Runs always-on so http://images.ai.lan is never a 502.
+  # Idle cost is only ~87 MiB of VRAM — ComfyUI allocates the card per render and
+  # releases it after, so it does not meaningfully compete with llama-swap while
+  # sitting there.
+  #
+  # Measured contention: rendering SDXL 1024x1024/15 steps takes ~26 s with the
+  # card free, ~41 s with a 4.9 GB LLM resident. ComfyUI degrades rather than
+  # failing — it offloads to CPU and retries VAE decode tiled. `ai-gpu comfy-up`
+  # still exists to force the LLM out first when you want full speed.
+  comfyui:
+    # CUDA 13.0 build, matching the host driver (580.178.04 / CUDA 13.0).
+    # NOTE: this image's entrypoint symlinks /opt/comfyui-manager into
+    # custom_nodes as if it were a legacy custom node, but ComfyUI-Manager 4.x
+    # is a pip package with no top-level __init__.py. ComfyUI therefore logs
+    # "IMPORT FAILED: .../ComfyUI-Manager" on every start. It is harmless —
+    # ComfyUI itself works — and affects the "-comfyui-manager-" tags identically,
+    # so there is nothing to gain by switching. Install custom nodes by hand into
+    # /srv/comfyui/custom_nodes instead.
+    image: ghcr.io/lecode-official/comfyui-docker:0.6.3-comfyui-0.8.2-pytorch-2.9.1-cuda-13.0-cudnn-9
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    volumes:
+      - /srv/comfyui/models:/opt/comfyui/models
+      - /srv/comfyui/custom_nodes:/opt/comfyui/custom_nodes
+      - /srv/comfyui/input:/opt/comfyui/input
+      - /mnt/shared-outputs:/opt/comfyui/output
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

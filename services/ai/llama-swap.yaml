@@ -1,0 +1,69 @@
+# llama-swap configuration for LXC 118 (ai)
+#
+# Deployed to /srv/llama-swap/config.yaml on the LXC and mounted read-only into
+# the container at /etc/llama-swap/config/config.yaml.
+#
+# VRAM POLICY — the RTX 3050 has only 6144 MiB. llama-swap's default routing
+# already runs exactly one model at a time, so the models below never compete
+# with each other. `ttl` then unloads the active model after idle, which is what
+# hands the card back for image generation (see `ai-gpu` in this directory).
+# llama.cpp itself has no keep-alive/idle-unload; the ttl here is the whole
+# mechanism.
+#
+# -ngl 99 means "offload every layer". Each model below is sized to fit the card
+# fully — measured VRAM is noted per model. Do not raise -c without re-measuring:
+# KV cache grows with context and is what pushes these over the edge.
+
+healthCheckTimeout: 300
+logLevel: info
+logRequests: true
+
+# Graceful stop window when a ttl expires or /api/models/unload is called.
+unloadTimeout: 15
+
+macros:
+  # Shared llama-server invocation. ${PORT} is assigned by llama-swap.
+  server: >
+    /usr/local/bin/llama-server
+    --host 127.0.0.1
+    --port ${PORT}
+    -fa on
+
+models:
+  "qwen3.5":
+    name: "Qwen3.5 9B (IQ4_XS)"
+    description: "General chat and reasoning. Thinking model - allow generous max_tokens."
+    # Measured: ~5034 MiB / 6144 MiB at -c 8192, ~30 tok/s generation.
+    # NOTE: this is unsloth's llama.cpp-native GGUF, NOT the old ollama blob.
+    # Ollama's qwen3.5 used its own engine format (qwen35.rope.dimension_sections
+    # with 3 entries where llama.cpp expects 4) and will not load here.
+    cmd: >
+      ${server}
+      -m /models/Qwen3.5-9B-IQ4_XS.gguf
+      -ngl 99
+      -c 8192
+    ttl: 600
+
+  "qwen2.5":
+    name: "Qwen2.5 7B (Q4_K_M)"
+    description: "Faster general model with tool-calling. Reused from the old ollama store."
+    # Measured: ~4634 MiB / 6144 MiB at -c 4096, ~32 tok/s generation.
+    cmd: >
+      ${server}
+      -m /models/qwen2.5-7.6b-q4_k_m.gguf
+      -ngl 99
+      -c 8192
+    ttl: 600
+
+  "bge-m3":
+    name: "BGE-M3 (F16)"
+    description: "Multilingual embeddings for RAG. Use POST /v1/embeddings."
+    # ~1.2 GB weights - by far the smallest resident here.
+    cmd: >
+      ${server}
+      -m /models/bge-m3-566m-f16.gguf
+      -ngl 99
+      -c 8192
+      --embeddings
+      --pooling cls
+    ttl: 600

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# ai-gpu — hand the single RTX 3050 (6 GB) between llama-swap and ComfyUI.
+#
+# Deployed to /usr/local/bin/ai-gpu on LXC 118 (ai).
+#
+# ComfyUI runs always-on (idle cost ~87 MiB), so this is about SPEED, not
+# availability: rendering with a 4.9 GB LLM resident works but takes ~41 s
+# instead of ~26 s, because ComfyUI offloads to CPU and retries VAE decode
+# tiled. `comfy-up` evicts the LLM first so a render gets the whole card.
+# llama-swap frees VRAM on its own via each model's `ttl`, but that can be up
+# to 10 minutes away.
+
+set -euo pipefail
+
+COMPOSE_DIR=/home/admin
+SWAP_URL=http://127.0.0.1:8080
+VRAM_FREE_TARGET_MIB=5000   # ComfyUI needs roughly this much for SDXL
+WAIT_SECS=60
+
+vram_used() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; }
+
+usage() {
+  cat <<'EOF'
+Usage: ai-gpu <command>
+
+  comfy-up     evict any resident LLM and make sure ComfyUI is up (full-speed renders)
+  comfy-down   stop ComfyUI entirely, freeing its ~87 MiB idle footprint
+  status       show what holds the GPU right now
+  unload       unload all llama-swap models without touching ComfyUI
+EOF
+}
+
+unload_llms() {
+  echo "-> asking llama-swap to unload all models"
+  curl -fsS -X POST "$SWAP_URL/api/models/unload" >/dev/null 2>&1 \
+    || echo "   (llama-swap not responding; continuing)"
+
+  echo -n "-> waiting for VRAM to free"
+  for _ in $(seq 1 "$WAIT_SECS"); do
+    used=$(vram_used)
+    if [ "$used" -lt $((6144 - VRAM_FREE_TARGET_MIB)) ]; then
+      echo " ok (${used} MiB in use)"
+      return 0
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo
+  echo "   WARNING: ${used} MiB still in use after ${WAIT_SECS}s — starting anyway" >&2
+}
+
+case "${1:-}" in
+  comfy-up)
+    unload_llms
+    echo "-> ensuring ComfyUI is up"
+    docker compose --project-directory "$COMPOSE_DIR" up -d comfyui
+    echo "-> http://images.ai.lan (allow ~30s if it was stopped)"
+    ;;
+  comfy-down)
+    echo "-> stopping ComfyUI"
+    docker compose --project-directory "$COMPOSE_DIR" stop comfyui
+    echo "-> images.ai.lan will 502 until 'ai-gpu comfy-up'"
+    ;;
+  unload)
+    unload_llms
+    ;;
+  status)
+    echo "=== GPU ==="
+    nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv
+    echo
+    echo "=== llama-swap running models ==="
+    curl -fsS "$SWAP_URL/running" 2>/dev/null || echo "(llama-swap not responding)"
+    echo
+    echo "=== containers ==="
+    docker ps --filter name=llama-swap --filter name=comfyui \
+      --format 'table {{.Names}}\t{{.Status}}'
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
