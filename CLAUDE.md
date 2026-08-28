@@ -508,3 +508,30 @@ pct exec 124 -- /opt/actions-runner/register.sh <github-url> <registration-token
 ```
 
 Registration tokens expire about an hour after they are issued.
+
+### Containerised runners (the ones that actually take the load)
+
+Alongside the native runner above, LXC 124 runs **four** containerised runners —
+`gh-runner-docker`, `-2`, `-3`, `-4` — from a locally built image
+`lightnotes-gh-runner:22.04`. Compose project at `/opt/gh-runner-docker/`, mirrored in this
+repo at `services/gh-runner-linux/` (see its README).
+
+- Same org, labels `self-hosted,Linux,X64,docker,homelab`; they self-register on first start
+  from an `ACCESS_TOKEN` PAT in `.env` / `runners.env` (untracked, chmod 600).
+- The Docker socket is bind-mounted, so jobs share the LXC's daemon.
+- **The CI tool belt is baked into the image** (`gh` 2.76.2, `yq` v4.44.3, `jq` 1.7.1,
+  `kubectl` v1.31.3, `kustomize` v5.4.3, `actionlint` 1.7.7), added Aug 2026. The lightchat
+  harness's `scripts/ensure-tools.sh` only *verifies* tools are on PATH and fails the job if
+  not — provisioning is the runner owner's job, i.e. this Dockerfile.
+- **Tools go in `/usr/local/bin`, never `~/.local/bin`.** Each container mounts a named
+  volume over `/home/runner`, which masks anything the image put there — and conversely, a
+  leftover binary in a volume's `~/.local/bin` shadows the image's, since `PATH` lists it
+  first. Suspect that first if a runner appears to be on a stale version.
+
+```sh
+pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose build runner && docker compose up -d'
+```
+
+`up -d` recreates all four; volumes (registrations, Rust toolchain, Android SDK, caches)
+survive. Rebuild while idle. For a minute afterwards each logs
+`Runner connect error: Conflict` while GitHub's old session lease expires — self-healing.
