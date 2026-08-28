@@ -131,10 +131,22 @@ ssh root@192.168.0.15 "pct exec 124 -- bash -c 'printf \"RUNNER_TOKEN=$TOKEN\\n\
 ssh root@192.168.0.15 "pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose up -d'"
 ```
 
-**Do not park a long-lived PAT here as `ACCESS_TOKEN`.** `env_file` injects it into the
-container environment, where every job step can read it — verified: a job shell finds
-`RUNNER_TOKEN` in its own `env`. Handing an `admin:org` PAT to arbitrary PR code is a poor
-trade for unattended recovery.
+To make that case unattended instead, install a PAT as `ACCESS_TOKEN` — `entrypoint.sh`
+prefers it and mints a fresh registration token on every start:
+
+```sh
+pct exec 124 -- bash -c 'read -rs T && printf %s "$T" | /opt/gh-runner-docker/set-runner-pat.sh'
+```
+
+The helper validates the token against the org before writing anything, backs up both env
+files, and writes them 0600. It reads stdin rather than argv so the value misses shell history
+and the process list.
+
+Scope it to exactly `admin:org` (fine-grained: organisation → "Self-hosted runners: read and
+write") and use a dedicated token, never a broad personal one. **Any job on these runners can
+read it.** That is not fixable by tightening file modes: the Docker socket is mounted, so a job
+can start a container that mounts these files. It is the price of socket-mounted runners, and
+the reason the token should be able to do nothing but register runners.
 
 Labels are fixed at registration, so `RUNNER_LABELS` only affects a *fresh* registration. To
 change labels on runners that are already registered, use the API instead — no token in the
