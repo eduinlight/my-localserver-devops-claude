@@ -142,6 +142,26 @@ The helper validates the token against the org before writing anything, backs up
 files, and writes them 0600. It reads stdin rather than argv so the value misses shell history
 and the process list.
 
+After installing a token, **recreate the containers** — `env_file` is injected at create
+time, so a running container keeps the token it was created with:
+
+```sh
+pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose up -d'
+```
+
+This path is verified, not assumed: on 2026-08-28 runner-4's registration was deleted and the
+container restarted with no human input. It minted a token from `ACCESS_TOKEN`, logged
+"A runner exists with the same name / Successfully replaced the runner", and was listening for
+jobs ~30 s later with its labels intact from `RUNNER_LABELS`.
+
+A runner counts as "already configured" if *any* of these survive in
+`actions-runner/` — deleting only `.runner` and `.credentials` makes `config.sh` refuse with
+"Cannot configure the runner because it is already configured":
+
+```
+.runner  .credentials  .credentials_rsaparams  .runner_migrated
+```
+
 Scope it to exactly `admin:org` (fine-grained: organisation → "Self-hosted runners: read and
 write") and use a dedicated token, never a broad personal one. **Any job on these runners can
 read it.** That is not fixable by tightening file modes: the Docker socket is mounted, so a job

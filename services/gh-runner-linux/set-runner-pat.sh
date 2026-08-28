@@ -45,5 +45,10 @@ for f in "$DIR/.env" "$DIR/runners.env"; do
 done
 
 echo
-echo "Done. Nothing needs restarting — registered runners ignore this."
-echo "It takes effect the next time a runner has to register from scratch."
+echo "Recreate the containers so the new value is baked into their config:"
+echo "  cd $DIR && docker compose up -d"
+echo
+echo "Compose injects env_file at *create* time, so a running container keeps whatever token"
+echo "it was created with. Until you recreate, the recovery path still holds the old value."
+echo "Already-registered runners never read it either way — it only matters when one has to"
+echo "register from scratch."

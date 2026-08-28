@@ -551,13 +551,15 @@ GitHub's old session lease expires — self-healing.
 non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human
 admin credential; revoke with `kubectl delete clusterrolebinding gh-runner-deployer`.
 
-**⚠️ Re-registration is broken.** `.env`/`runners.env` hold `RUNNER_TOKEN` — *registration*
-tokens, single-use and ~1h TTL, dated Aug 6 and Aug 27, both long expired. No `ACCESS_TOKEN`
-(PAT) is set. Registered runners are fine (they use their own `.credentials` in the volume),
-but a runner whose volume is lost cannot re-register. Recovery needs no stored secret — the
-dev box's `gh` has `admin:org`: mint a token with
-`gh api -X POST /orgs/eduinlight-org/actions/runners/registration-token --jq .token`, write it
-as `RUNNER_TOKEN=` into `runners.env`, and `docker compose up -d` within the hour.
-**Do not store a PAT there:** `env_file` puts it in the container env where every job step can
-read it. Labels are fixed at registration, so change them on an existing runner via the API:
+**Unattended re-registration works** (Aug 2026). `.env`/`runners.env` now hold `ACCESS_TOKEN`,
+a PAT that `entrypoint.sh` exchanges for a fresh registration token on every start, so a runner
+whose volume is lost comes back on its own. Install one with
+`pct exec 124 -- bash -c 'read -rs T && printf %s "$T" | /opt/gh-runner-docker/set-runner-pat.sh'`
+(validates before writing), then **`docker compose up -d`** — `env_file` is injected at *create*
+time, so running containers keep the old value until recreated. Verified end to end by deleting
+runner-4's registration and restarting it. Note the token is readable by any job: the Docker
+socket is mounted, so file modes buy nothing — scope it to `admin:org` alone.
+A runner counts as configured if any of `.runner`, `.credentials`, `.credentials_rsaparams`,
+`.runner_migrated` survive in `actions-runner/`; removing only the first two makes `config.sh`
+refuse. Labels are fixed at registration, so change them on an existing runner via the API:
 `gh api -X POST /orgs/eduinlight-org/actions/runners/<id>/labels -f 'labels[]=kubectl'`.
