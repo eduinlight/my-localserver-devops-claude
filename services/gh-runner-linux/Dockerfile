@@ -123,8 +123,15 @@ RUN set -eux \
 # schedule is the maintenance story (§8).
 #
 # CARGO_HOME and RUSTUP_HOME are /usr/local, not ~, for the masking reason at the top. Both are
-# left world-writable because jobs fetch crates and may `cargo install` into them at run time —
-# the same thing the official rust image does.
+# opened up because jobs fetch crates and may `cargo install` into them at run time — the same
+# thing the official rust image does.
+#
+# It must be `a+rwX`, never `a+w`. Crate tarballs carry their own mode bits and cargo preserves
+# them: fnv-1.0.7 ships lib.rs at 0660, which `a+w` turns into 0662 — writable by the runner and
+# still unreadable. Every version check passes and the build dies partway through with
+# "couldn't read .../fnv-1.0.7/lib.rs: Permission denied (os error 13)". The capital X sets the
+# execute bit on directories only, keeping the registry traversable without making sources
+# executable.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -133,7 +140,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal \
     && rustup component add rustfmt clippy \
     && rustup target add wasm32-unknown-unknown aarch64-linux-android \
-    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME" \
     && rustc --version && cargo --version \
     && rustup target list --installed
 
@@ -191,8 +198,12 @@ RUN curl -fsSL -o runner.tar.gz \
 # compilation); everything above stays cached when its version changes.
 ARG DIOXUS_CLI_VERSION=0.7.10
 RUN cargo install dioxus-cli --version "${DIOXUS_CLI_VERSION}" --locked \
-    && chmod -R a+w "$CARGO_HOME" \
-    && dx --version
+    && chmod -R a+rwX "$CARGO_HOME" \
+    && dx --version \
+    # Fail the build rather than ship a registry a job cannot read. This is the check that
+    # would have caught the a+w bug: every version command still succeeded with it in place.
+    && { unreadable="$(find "$CARGO_HOME" "$RUSTUP_HOME" ! -perm -o+r -print -quit)"; \
+         [ -z "$unreadable" ] || { echo "unreadable by the runner user: $unreadable" >&2; exit 1; }; }
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
