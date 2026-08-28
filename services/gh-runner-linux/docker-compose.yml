@@ -12,11 +12,13 @@ services:
     environment:
       RUNNER_URL: https://github.com/eduinlight-org
       RUNNER_NAME: gh-runner-docker
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab
+      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
       RUNNER_EPHEMERAL: "false"
     volumes:
       - runner-home:/home/runner
       - /var/run/docker.sock:/var/run/docker.sock
+      # Nested under the runner-home volume; the more specific mount wins.
+      - /srv/gh-runner/kube:/home/runner/.kube:ro
     group_add:
       - "996"
 
@@ -29,11 +31,13 @@ services:
     environment:
       RUNNER_URL: https://github.com/eduinlight-org
       RUNNER_NAME: gh-runner-docker-2
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab
+      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
       RUNNER_EPHEMERAL: "false"
     volumes:
       - runner-home-2:/home/runner
       - /var/run/docker.sock:/var/run/docker.sock
+      # Nested under the runner-home volume; the more specific mount wins.
+      - /srv/gh-runner/kube:/home/runner/.kube:ro
     group_add:
       - "996"
 
@@ -46,11 +50,13 @@ services:
     environment:
       RUNNER_URL: https://github.com/eduinlight-org
       RUNNER_NAME: gh-runner-docker-3
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab
+      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
       RUNNER_EPHEMERAL: "false"
     volumes:
       - runner-home-3:/home/runner
       - /var/run/docker.sock:/var/run/docker.sock
+      # Nested under the runner-home volume; the more specific mount wins.
+      - /srv/gh-runner/kube:/home/runner/.kube:ro
     group_add:
       - "996"
 
@@ -63,11 +69,13 @@ services:
     environment:
       RUNNER_URL: https://github.com/eduinlight-org
       RUNNER_NAME: gh-runner-docker-4
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab
+      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
       RUNNER_EPHEMERAL: "false"
     volumes:
       - runner-home-4:/home/runner
       - /var/run/docker.sock:/var/run/docker.sock
+      # Nested under the runner-home volume; the more specific mount wins.
+      - /srv/gh-runner/kube:/home/runner/.kube:ro
     group_add:
       - "996"
 

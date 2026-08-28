@@ -514,24 +514,45 @@ Registration tokens expire about an hour after they are issued.
 Alongside the native runner above, LXC 124 runs **four** containerised runners —
 `gh-runner-docker`, `-2`, `-3`, `-4` — from a locally built image
 `lightnotes-gh-runner:22.04`. Compose project at `/opt/gh-runner-docker/`, mirrored in this
-repo at `services/gh-runner-linux/` (see its README).
+repo at `services/gh-runner-linux/` (see its README for the full picture).
 
-- Same org, labels `self-hosted,Linux,X64,docker,homelab`; they self-register on first start
-  from an `ACCESS_TOKEN` PAT in `.env` / `runners.env` (untracked, chmod 600).
+- Labels `self-hosted,Linux,X64,docker,homelab,kubectl`, identical on all four, so a job lands
+  on any of them — they must stay interchangeable.
 - The Docker socket is bind-mounted, so jobs share the LXC's daemon.
-- **The CI tool belt is baked into the image** (`gh` 2.76.2, `yq` v4.44.3, `jq` 1.7.1,
-  `kubectl` v1.31.3, `kustomize` v5.4.3, `actionlint` 1.7.7), added Aug 2026. The lightchat
-  harness's `scripts/ensure-tools.sh` only *verifies* tools are on PATH and fails the job if
-  not — provisioning is the runner owner's job, i.e. this Dockerfile.
-- **Tools go in `/usr/local/bin`, never `~/.local/bin`.** Each container mounts a named
-  volume over `/home/runner`, which masks anything the image put there — and conversely, a
-  leftover binary in a volume's `~/.local/bin` shadows the image's, since `PATH` lists it
-  first. Suspect that first if a runner appears to be on a stale version.
+- **The whole toolchain is baked into the image** (Aug 2026): Rust stable + rustfmt/clippy +
+  the wasm32 and aarch64-linux-android targets, `dx` 0.7.10, Temurin 17, the Android SDK/NDK,
+  Node 22, Playwright 1.49.1 + chromium, `gh`/`jq`/`yq`/`kubectl`/`kustomize`/`actionlint`,
+  and the AppImage/deb/rpm packaging stack. The lightchat harness's `scripts/ensure-tools.sh`
+  only *verifies* and fails the job by name — provisioning is this Dockerfile's job.
+
+**Two rules govern the image, both from the named volume mounted over `/home/runner`:**
+
+1. **Nothing installs under `/home/runner`** — the volume masks it. Hence
+   `CARGO_HOME=/usr/local/cargo`, `ANDROID_HOME=/opt/android-sdk`,
+   `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`. The kubeconfig bind-mount at
+   `/home/runner/.kube` is the exception — a nested, more specific mount wins.
+2. **PATH must be set by `ENV`, not a profile.** Actions runs steps as
+   `bash --noprofile --norc`, which reads neither `.bashrc` nor `.profile`. This bites
+   silently: before Aug 2026, `cargo` and `dx` were installed on a runner, resolved fine from
+   an interactive `docker exec`, and were missing from every job. **Always verify with
+   `bash --noprofile --norc`, never `bash -lc`** — the latter lies.
 
 ```sh
+pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -c 'command -v cargo dx kubectl'
 pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose build runner && docker compose up -d'
 ```
 
-`up -d` recreates all four; volumes (registrations, Rust toolchain, Android SDK, caches)
-survive. Rebuild while idle. For a minute afterwards each logs
-`Runner connect error: Conflict` while GitHub's old session lease expires — self-healing.
+`up -d` recreates all four; volumes (registrations, `_work`, gradle/bun caches) survive.
+Rebuild while idle. For a minute afterwards each logs `Runner connect error: Conflict` while
+GitHub's old session lease expires — self-healing.
+
+**k8s access:** all four share a read-only kubeconfig at `/srv/gh-runner/kube/config` →
+`/home/runner/.kube`, using a dedicated k3s ServiceAccount `gh-runner-deployer` (kube-system,
+non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human
+admin credential; revoke with `kubectl delete clusterrolebinding gh-runner-deployer`.
+
+**⚠️ Both registration PATs (`.env`, `runners.env`) return 401.** Registered runners are fine —
+they authenticate with their own `.credentials` in the volume — but a runner whose volume is
+lost **cannot re-register** until a live `admin:org` PAT is dropped in. Labels are fixed at
+registration, so changing them on an existing runner goes through the API instead:
+`gh api -X POST /orgs/eduinlight-org/actions/runners/<id>/labels -f 'labels[]=kubectl'`.
