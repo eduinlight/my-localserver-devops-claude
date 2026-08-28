@@ -551,8 +551,13 @@ GitHub's old session lease expires — self-healing.
 non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human
 admin credential; revoke with `kubectl delete clusterrolebinding gh-runner-deployer`.
 
-**⚠️ Both registration PATs (`.env`, `runners.env`) return 401.** Registered runners are fine —
-they authenticate with their own `.credentials` in the volume — but a runner whose volume is
-lost **cannot re-register** until a live `admin:org` PAT is dropped in. Labels are fixed at
-registration, so changing them on an existing runner goes through the API instead:
+**⚠️ Re-registration is broken.** `.env`/`runners.env` hold `RUNNER_TOKEN` — *registration*
+tokens, single-use and ~1h TTL, dated Aug 6 and Aug 27, both long expired. No `ACCESS_TOKEN`
+(PAT) is set. Registered runners are fine (they use their own `.credentials` in the volume),
+but a runner whose volume is lost cannot re-register. Recovery needs no stored secret — the
+dev box's `gh` has `admin:org`: mint a token with
+`gh api -X POST /orgs/eduinlight-org/actions/runners/registration-token --jq .token`, write it
+as `RUNNER_TOKEN=` into `runners.env`, and `docker compose up -d` within the hour.
+**Do not store a PAT there:** `env_file` puts it in the container env where every job step can
+read it. Labels are fixed at registration, so change them on an existing runner via the API:
 `gh api -X POST /orgs/eduinlight-org/actions/runners/<id>/labels -f 'labels[]=kubectl'`.

@@ -108,29 +108,36 @@ GitHub's old session lease expires — it retries and reconnects on its own.
 `dx` is the slowest layer by far and is deliberately last, so changing its version does not
 rebuild Rust, the Android SDK or Playwright.
 
-## ⚠️ Both registration PATs are dead
+## ⚠️ Re-registration is not possible unattended
 
-`ACCESS_TOKEN` in `.env` and `runners.env` both return **401**. Nothing is broken day to day —
-a registered runner authenticates with the `.credentials` in its own volume, not the PAT — but
-**a runner whose volume is lost cannot re-register**, and `entrypoint.sh` would exit with
-"no registration token available".
+`entrypoint.sh` accepts either:
 
-Before relying on recovery, mint a classic PAT with `admin:org` and drop it in:
+- `ACCESS_TOKEN` — a PAT, exchanged for a fresh registration token on every start. **Not set
+  anywhere on this host.**
+- `RUNNER_TOKEN` — a registration token: single-use, valid about an hour. This is what `.env`
+  and `runners.env` actually hold, dated 2026-08-06 and 2026-08-27. Both are long expired.
+
+Day to day nothing is wrong — a registered runner authenticates with the `.credentials` in its
+own volume and never reads either variable. But **a runner whose volume is lost cannot
+re-register**: `entrypoint.sh` exits with "no registration token available" and the container
+restart-loops until someone intervenes.
+
+Recovery needs no stored secret, because the dev box's `gh` already carries `admin:org`:
 
 ```sh
-pct exec 124 -- bash -c 'printf "ACCESS_TOKEN=ghp_xxx\n" > /opt/gh-runner-docker/runners.env && chmod 600 /opt/gh-runner-docker/runners.env'
+TOKEN=$(gh api -X POST /orgs/eduinlight-org/actions/runners/registration-token --jq .token)
+ssh root@192.168.0.15 "pct exec 124 -- bash -c 'printf \"RUNNER_TOKEN=$TOKEN\\n\" > /opt/gh-runner-docker/runners.env'"
+# then, within the hour:
+ssh root@192.168.0.15 "pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose up -d'"
 ```
 
-Check whether a token is live before trusting it:
-
-```sh
-curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Accept: application/vnd.github+json" \
-  https://api.github.com/orgs/eduinlight-org/actions/runners/registration-token
-```
+**Do not park a long-lived PAT here as `ACCESS_TOKEN`.** `env_file` injects it into the
+container environment, where every job step can read it — verified: a job shell finds
+`RUNNER_TOKEN` in its own `env`. Handing an `admin:org` PAT to arbitrary PR code is a poor
+trade for unattended recovery.
 
 Labels are fixed at registration, so `RUNNER_LABELS` only affects a *fresh* registration. To
-change labels on runners that are already registered, use the API instead — no PAT in the
+change labels on runners that are already registered, use the API instead — no token in the
 container needed, and no re-registration:
 
 ```sh
@@ -141,8 +148,7 @@ gh api -X POST /orgs/eduinlight-org/actions/runners/<id>/labels -f 'labels[]=kub
 
 Add a `runner-N` service and a matching `runner-home-N` volume to `docker-compose.yml`
 (copy `runner-2`), then `docker compose up -d`. Only the first service carries `build:`;
-the rest reuse the image. Registration on first start needs a **live** `ACCESS_TOKEN` — see
-above.
+the rest reuse the image. Registration on first start needs a **live** `RUNNER_TOKEN` — see above.
 
 Secrets are not in this repo — see `.env.example`.
 
