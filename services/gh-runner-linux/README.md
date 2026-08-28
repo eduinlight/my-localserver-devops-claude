@@ -47,6 +47,39 @@ Verify the way a job sees it, never with `bash -lc`:
 pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -c 'command -v cargo dx kubectl'
 ```
 
+## The registry must be readable, not just writable
+
+Moving `CARGO_HOME` to `/usr/local/cargo` makes the registry root-owned, so it has to be opened
+up for the runner user. It must be **`chmod -R a+rwX`**, never `a+w`:
+
+```
+error: couldn't read `/usr/local/cargo/registry/src/.../fnv-1.0.7/lib.rs`:
+Permission denied (os error 13)
+```
+
+Crate tarballs carry their own mode bits and cargo preserves them on extraction. `fnv-1.0.7`
+ships `lib.rs` at `0660`, which `a+w` turns into `0662` — writable by the runner and still
+unreadable. It was the only such file among ~35,000 in the registry, so a smoke test that
+compiles an ordinary crate passes and CI dies only when it reaches that one.
+
+`cargo`, `rustc` and `dx` all print correct versions the whole time, which is what makes this
+worth a build-time assertion rather than a version check. The Dockerfile fails the build if
+anything under `CARGO_HOME` or `RUSTUP_HOME` lacks `o+r`. To check a running container:
+
+```sh
+pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -c \
+  'find /usr/local/cargo /usr/local/rustup ! -perm -o+r -print -quit'
+```
+
+Empty output is correct. To repair one in place without a rebuild:
+
+```sh
+pct exec 124 -- docker exec -u root gh-runner-docker chmod -R a+rwX /usr/local/cargo /usr/local/rustup
+```
+
+The capital `X` sets the execute bit on directories only — that is what keeps the registry
+traversable without marking every source file executable.
+
 ## What is in the image
 
 | Tool | Version | §|

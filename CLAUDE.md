@@ -546,6 +546,14 @@ pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose build runner
 Rebuild while idle. For a minute afterwards each logs `Runner connect error: Conflict` while
 GitHub's old session lease expires — self-healing.
 
+**Cargo registry perms:** `CARGO_HOME=/usr/local/cargo` is root-owned, so it is opened with
+`chmod -R a+rwX` — **never `a+w`**. Crate tarballs keep their own modes; `fnv-1.0.7` ships
+`lib.rs` at 0660, and `a+w` makes that 0662: writable, still unreadable, and CI dies with
+`couldn't read .../fnv-1.0.7/lib.rs: Permission denied (os error 13)` partway through a build
+while `cargo`/`rustc`/`dx --version` all look fine. The Dockerfile now asserts readability at
+build time. Repair a live container with
+`docker exec -u root <c> chmod -R a+rwX /usr/local/cargo /usr/local/rustup`.
+
 **k8s access:** all four share a read-only kubeconfig at `/srv/gh-runner/kube/config` →
 `/home/runner/.kube`, using a dedicated k3s ServiceAccount `gh-runner-deployer` (kube-system,
 non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human
