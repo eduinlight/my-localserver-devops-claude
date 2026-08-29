@@ -172,13 +172,28 @@ RUN set -eux \
 
 # §4.3 — Playwright's system libraries, and the browser itself so no job downloads it.
 # PLAYWRIGHT_BROWSERS_PATH moves the cache out of ~/.cache, which the volume would mask.
+#
+# `a+rwX`, not `a+rX`. Setting PLAYWRIGHT_BROWSERS_PATH to a root-owned directory is precisely
+# what makes an in-job `playwright install` die with
+#   EACCES: permission denied, mkdir '/opt/ms-playwright/__dirlock'
+# — the browser is present and readable, so nothing looks wrong until a job tries to write.
+#
+# The version is load-bearing: playwright resolves a version-specific directory (1.49.1 wants
+# chromium-1148) and a browser from another release sits here unused. Bump PLAYWRIGHT_VERSION
+# and the browser together, and check with
+#   node -e 'console.log(require("playwright").chromium.executablePath())'
 ARG PLAYWRIGHT_VERSION=1.49.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium \
     && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium \
-    && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH" \
-    && rm -rf /var/lib/apt/lists/* /root/.npm
+    && chmod -R a+rwX "$PLAYWRIGHT_BROWSERS_PATH" \
+    && rm -rf /var/lib/apt/lists/* /root/.npm \
+    # Assert what a version check cannot: that the cache is writable and the browser this
+    # playwright release actually reaches for is the one present.
+    && { nw="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type d ! -perm -o+w -print -quit)"; \
+         [ -z "$nw" ] || { echo "not writable by the runner user: $nw" >&2; exit 1; }; } \
+    && test -x "$(ls -d "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux/chrome | head -1)"
 
 # AppImage needs FUSE, which this container does not get (it would want --device /dev/fuse and
 # --cap-add SYS_ADMIN). Extract-and-run is the documented alternative (§3.6).

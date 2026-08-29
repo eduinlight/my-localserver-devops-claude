@@ -554,6 +554,13 @@ while `cargo`/`rustc`/`dx --version` all look fine. The Dockerfile now asserts r
 build time. Repair a live container with
 `docker exec -u root <c> chmod -R a+rwX /usr/local/cargo /usr/local/rustup`.
 
+**Playwright:** `/opt/ms-playwright` needs `chmod -R a+rwX`, not `a+rX` — a root-owned browser
+cache reads fine and then fails any in-job `playwright install` with
+`EACCES ... mkdir '/opt/ms-playwright/__dirlock'`. The browser build is version-locked
+(1.49.1 → `chromium-1148`); a mismatched one sits unused, so verify with
+`node -e 'console.log(require("playwright").chromium.executablePath())'` rather than checking
+that some chromium exists.
+
 **k8s access:** all four share a read-only kubeconfig at `/srv/gh-runner/kube/config` →
 `/home/runner/.kube`, using a dedicated k3s ServiceAccount `gh-runner-deployer` (kube-system,
 non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human

@@ -108,6 +108,30 @@ Versions are `ARG`s — override at build time without editing the file. Keep th
 Chromium's system libraries come from `playwright install-deps`, not the package list in §4.3
 — that list is the 24.04 `t64` spelling and does not resolve on jammy.
 
+## Playwright: the cache must be writable, and the version must match
+
+Two separate traps, both silent.
+
+**Writable.** `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` is populated by root at build time,
+so it has to be opened with `chmod -R a+rwX` — `a+rX` leaves the browser readable and present
+while any in-job `playwright install` dies with:
+
+```
+EACCES: permission denied, mkdir '/opt/ms-playwright/__dirlock'
+```
+
+**Matching build.** Playwright resolves a *version-specific* directory — 1.49.1 wants
+`chromium-1148` — and a browser from another release sits in that directory unused. Checking
+that "a chromium is there" proves nothing. Ask playwright itself:
+
+```sh
+pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -c \
+  'node -e "console.log(require(\'playwright\').chromium.executablePath())"'
+```
+
+That path must exist and be executable. Bump `PLAYWRIGHT_VERSION` and the browser in the same
+change. The Dockerfile asserts both at build time.
+
 ## kubectl access
 
 All four carry the `kubectl` label and share one read-only kubeconfig at
