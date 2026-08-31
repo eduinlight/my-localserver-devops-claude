@@ -15,7 +15,8 @@
 - **GPU:** NVIDIA GeForce RTX 3050 6GB + Intel Arc integrated
 - **Disks:**
   - `nvme0n1` — 1.8 TB NVMe (boot, root, LVM-thin for VMs)
-  - `sda` — 57.3 GB (secondary)
+  - `sda` — 8 TB SATA HDD (Seagate ST8000NT001, 7200 rpm CMR) — the media library,
+    ext4 at `/mnt/media-8tb` on the host, bind-mounted into LXC 104 as `/mnt/media/data`
 - **No ZFS pools**
 
 ### Storage
@@ -23,11 +24,14 @@
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
 | local | dir | ~94 GB | ~60 GB | ~30 GB | 63.4% |
-| local-lvm | lvmthin | ~1.7 TB | ~1.59 TB | ~123 GB | ~92.8% |
+| local-lvm | lvmthin | ~1.7 TB | ~882 GB | ~828 GB | ~51.6% |
+| /mnt/media-8tb | ext4 (host mount, not PVE storage) | 7.3 TiB | 690 GB | 6.7 TiB | 10% |
 
-**`local-lvm` is thin-overcommitted and runs close to full** — provisioned volumes
-sum to ~3.67 TB against a 1.71 TB pool. If `data_percent` reaches 100% every guest
-on it starts throwing I/O errors and thin metadata can corrupt. Check with
+**`local-lvm` is thin-overcommitted** — provisioned volumes sum to ~2.98 TB against a
+1.71 TB pool. It sat at 92% until Aug 2026, when moving the 690 GB media library to the
+new 8 TB HDD (and dropping an empty orphan volume) brought it back to ~52%. If
+`data_percent` reaches 100% every guest on it starts throwing I/O errors and thin
+metadata can corrupt. Check with
 `lvs --units g -o lv_name,lv_size,data_percent pve/data`.
 
 Guests do not return freed blocks to the pool on their own unless the volume has
@@ -70,7 +74,7 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | 100 | s3 | running | 192.168.0.5 | 512 MB | 1 | 8 GB |
 | 101 | docker | **TEMPLATE** | — | 512 MB | 1 | — |
 | 103 | docker-registry | running | 192.168.0.27 | 2 GB | 4 | 100 GB |
-| 104 | media | running | 192.168.0.22 | 8 GB | 4 | 20+512+812 GB |
+| 104 | media | running | 192.168.0.22 | 8 GB | 4 | 40+812 GB + 8 TB HDD |
 | 105 | gitlab | running | 192.168.0.23 | 16 GB | 16 | 200 GB |
 | 106 | gitlab-runner-docker | running | 192.168.0.24 | 8 GB | 8 | 100 GB |
 | 107 | gitlab-runner-shell | running | 192.168.0.25 | 1 GB | 8 | 20 GB |
@@ -135,12 +139,50 @@ When deploying a new service, clone the appropriate template based on whether th
 - **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runners — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
 - **Kubernetes:** k3s cluster — cp (200) + 2 workers (201, 202), ArgoCD + dashboard in-cluster
 - **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
-- **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
+- **Media:** Media server (104 — library on the 8 TB HDD, see `services/media/`), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100)
 - **Secrets:** Vaultwarden (109) at https://secrets.lan — see "## Vaultwarden" below and `services/vaultwarden/`
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** Manager 210 (192.168.0.65) + workers 211/212 — see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202 — see "## k3s Cluster" section below.
+
+---
+
+## Media Library Storage (8 TB HDD → LXC 104)
+
+The Jellyfin/arr library lives on the **8 TB SATA disk**, not on `local-lvm`. Moved there
+Aug 2026 — it was 690 GB in an 812 GB thin volume at 91% full, and it was most of what was
+keeping the thin pool at 92%. Full detail in `services/media/README.md`.
+
+- Host: `/dev/sda1` ext4, mounted at `/mnt/media-8tb` (fstab by UUID, `noatime,nofail`)
+- Container: `mp2: /mnt/media-8tb,mp=/mnt/media/data` in `/etc/pve/lxc/104.conf`
+- App configs stay on the NVMe volume (`mp1` → `/mnt/media`) — they are SQLite and belong
+  on flash. `mp2` is a **nested** mount under `mp1`; the more specific mount wins, so the
+  compose file needed no changes at all.
+
+Three things to know before touching this tree again:
+
+- **Hardlinks are load-bearing.** Sonarr/Radarr import by hardlinking from `downloads`
+  into `movies`/`shows`, so those three directories must stay on one filesystem. 350 of
+  789 files are hardlinked — 1.15 TB apparent, 690 GB real. Any move needs
+  `rsync -aHAX --numeric-ids`; **`-H` is not optional** and `--numeric-ids` is what keeps
+  the unprivileged idmap (offset 100000) intact, since the host has no user for UID 101000.
+- **A host bind mount is not idmapped for you.** `chown 100000:100000` the host directory
+  or the container sees `nobody:nogroup` — which is exactly the state the older
+  `mp0: /mnt/usb` bind mount is in.
+- **`mkfs.ext4 -m 0 -T largefile`** on a bulk data disk. The defaults cost ~400 GB to the
+  root block reserve and ~120 GB to an inode table sized for 500 M small files.
+
+Verify a move by comparing apparent bytes and the nlink>1 count on **both** sides — `du`
+dedupes hardlinks, so matching `du` output does not prove the links survived:
+
+```sh
+find <tree> -type f -printf '%s\n' | awk '{s+=$1} END {print s}'   # must match exactly
+find <tree> -type f -links +1 | wc -l                              # must match exactly
+```
+
+Reclaiming freed thin-pool space needs a trim, since deleting files inside a guest does
+not return blocks to the pool (`mp1` has `discard=on`): `pct fstrim 104`.
 
 ---
 
