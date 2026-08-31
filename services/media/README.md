@@ -124,3 +124,36 @@ the total is meaningful.
 - **`docker compose down` before any storage surgery.** qBittorrent writes continuously.
 - The old `mp0: /mnt/usb` bind mount points at a directory on `pve-root`, not a real USB
   disk, and is visible in the container as `nobody:nogroup`. It is unused by the stack.
+
+## Boot-race guard
+
+`mp2` is a host bind mount, and two things conspire against it on a cold boot:
+the fstab entry is `nofail` (so `local-fs.target` does not wait for the disk), and
+`pve-guests.service` carries no `local-fs` ordering at all. LXC 104 has `onboot: 1`.
+So a boot that outruns the SATA disk would bind-mount the bare, empty `/mnt/media-8tb`
+directory — and Sonarr/Radarr would scan an empty library and mark the entire collection
+missing. That is a slow, annoying recovery.
+
+Two mitigations, belt and braces:
+
+1. **Ordering** — the fstab entry carries `x-systemd.before=pve-guests.service`, so if the
+   mount is going to happen at all, it happens before any guest starts.
+2. **A pre-start hook that refuses to start the container** if the library isn't really
+   there. `nofail` means a genuinely dead disk still lets the host boot and every *other*
+   guest start; only LXC 104 is held back.
+
+```sh
+pvesm set local --content iso,vztmpl,backup,snippets      # one-time
+# media-mount-guard.pl -> /var/lib/vz/snippets/ on the PVE host
+pct set 104 --hookscript local:snippets/media-mount-guard.pl
+```
+
+The guard fails closed on both "not mounted" and "mounted but empty" (the second matters
+because an empty mountpoint directory is indistinguishable from a mounted-but-blank disk
+by path alone). Verified all three ways — unmounted, tmpfs mounted over it, and healthy.
+
+> Writing this file onto the host via `ssh root@host '... <<"EOF" ...'` silently corrupts
+> it: the outer single quotes end at the first `'` inside the Perl source, so every quoted
+> string loses its quotes and the script dies with `Bareword ... not allowed`. Because the
+> hook fails closed, that in turn blocks the container from starting at all. `scp` the file
+> instead, and `perl -c` it on the host.
