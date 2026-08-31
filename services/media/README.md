@@ -27,7 +27,7 @@ Two different disks, deliberately:
 
 | Path in LXC | Backing store | Size | Holds |
 |-------------|---------------|------|-------|
-| `/mnt/media` | `local-lvm:vm-104-disk-2` (NVMe, mp1) | 812 GB vol, ~2 GB used | app configs — SQLite DBs for jellyfin/sonarr/radarr/… |
+| `/mnt/media` | `local-lvm:vm-104-disk-1` (NVMe, mp1) | 20 GB vol, ~2 GB used | app configs — SQLite DBs for jellyfin/sonarr/radarr/… |
 | `/mnt/media/data` | `/dev/sda1` ext4, bind-mounted (mp2) | **7.3 TiB** | the library: `downloads`, `movies`, `shows`, `subtitles` |
 
 `mp2` is a **nested** mountpoint underneath `mp1` — the more specific mount wins, so
@@ -157,3 +157,58 @@ by path alone). Verified all three ways — unmounted, tmpfs mounted over it, an
 > string loses its quotes and the script dies with `Bareword ... not allowed`. Because the
 > hook fails closed, that in turn blocks the container from starting at all. `scp` the file
 > instead, and `perl -c` it on the host.
+
+
+## Shrinking the config volume (and the thin-provisioning trap)
+
+`mp1` was 812 GB because it used to hold the library too. Once the library moved it held
+1.9 GB, so it was cut to 20 GB. The filesystem part is routine — **shrink the filesystem
+before the volume, never the reverse**:
+
+```sh
+pct stop 104
+e2fsck -fy /dev/pve/vm-104-disk-2         # required; rc 0 and 1 are both success
+resize2fs /dev/pve/vm-104-disk-2 19G      # 1G under target = margin during the reduce
+lvreduce -f -L 20G pve/vm-104-disk-2
+resize2fs /dev/pve/vm-104-disk-2          # grow back to fill
+```
+
+Two things that will mislead you:
+
+**Do not size the target from `blocks used`.** On the 812 GB filesystem, `dumpe2fs`
+reported 15.6 GB used against 1.9 GB of real data — 12.7 GB of that was **inode tables**
+(53 M inodes at the default ratio), which `resize2fs` shrinks along with the filesystem.
+Ask `resize2fs -P` for the true floor instead; it said 4.7 GB.
+
+**`lvreduce` does not release thin mappings past the new end of the volume.** After the
+reduce, `lvs` showed `data_percent` of **91% on a 20 GB volume holding 1.9 GB**. The
+mappings were still there, just no longer addressable through the shortened device, so
+`fstrim` could not reach them. Watch the absolute number rather than the percentage to
+see it clearly:
+
+```
+before:  1.95% of 812 GB = 15.8 GB      # same blocks,
+after:  91.31% of  20 GB = 18.7 GB      # just divided by a smaller LSize
+```
+
+Left alone it would have crossed 100% as the configs grew. The fix is to drop the thin
+device entirely — there is no in-place compaction:
+
+```sh
+lvcreate -V 20G --thinpool pve/data -n vm-104-disk-1 pve
+mkfs.ext4 -q /dev/pve/vm-104-disk-1
+# mount both, then:
+rsync -aHAX --numeric-ids /mnt/cfg-old/ /mnt/cfg-new/ --exclude lost+found
+# repoint mp1 in /etc/pve/lxc/104.conf, start, verify, then:
+lvremove -y pve/vm-104-disk-2
+```
+
+That released 18.9 GB and the fresh volume sits at 11%.
+
+### fstrim notes
+
+- `pct fstrim 104` runs host-side and is the tool to use. `fstrim` **inside** the
+  unprivileged container fails with `FITRIM ioctl failed: Operation not permitted`.
+- ext4 will not re-issue a discard for a range it already trimmed, so a second run
+  reporting 88 MiB where the first reported 16.8 GiB is expected — it is *not* evidence
+  that the first trim failed.

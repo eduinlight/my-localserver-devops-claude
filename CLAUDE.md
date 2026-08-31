@@ -24,12 +24,13 @@
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
 | local | dir | ~94 GB | ~60 GB | ~30 GB | 63.4% |
-| local-lvm | lvmthin | ~1.7 TB | ~882 GB | ~828 GB | ~51.6% |
+| local-lvm | lvmthin | ~1.7 TB | ~868 GB | ~841 GB | ~50.8% |
 | /mnt/media-8tb | ext4 (host mount, not PVE storage) | 7.3 TiB | 690 GB | 6.7 TiB | 10% |
 
-**`local-lvm` is thin-overcommitted** — provisioned volumes sum to ~2.98 TB against a
+**`local-lvm` is thin-overcommitted** — provisioned volumes sum to ~2.19 TB against a
 1.71 TB pool. It sat at 92% until Aug 2026, when moving the 690 GB media library to the
-new 8 TB HDD (and dropping an empty orphan volume) brought it back to ~52%. If
+new 8 TB HDD, dropping an empty orphan volume, and shrinking LXC 104's now-oversized
+812 GB config volume to 20 GB brought it back to ~51%. If
 `data_percent` reaches 100% every guest on it starts throwing I/O errors and thin
 metadata can corrupt. Check with
 `lvs --units g -o lv_name,lv_size,data_percent pve/data`.
@@ -74,7 +75,7 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | 100 | s3 | running | 192.168.0.5 | 512 MB | 1 | 8 GB |
 | 101 | docker | **TEMPLATE** | — | 512 MB | 1 | — |
 | 103 | docker-registry | running | 192.168.0.27 | 2 GB | 4 | 100 GB |
-| 104 | media | running | 192.168.0.22 | 8 GB | 4 | 40+812 GB + 8 TB HDD |
+| 104 | media | running | 192.168.0.22 | 8 GB | 4 | 40+20 GB + 8 TB HDD |
 | 105 | gitlab | running | 192.168.0.23 | 16 GB | 16 | 200 GB |
 | 106 | gitlab-runner-docker | running | 192.168.0.24 | 8 GB | 8 | 100 GB |
 | 107 | gitlab-runner-shell | running | 192.168.0.25 | 1 GB | 8 | 20 GB |
@@ -183,6 +184,21 @@ find <tree> -type f -links +1 | wc -l                              # must match 
 
 Reclaiming freed thin-pool space needs a trim, since deleting files inside a guest does
 not return blocks to the pool (`mp1` has `discard=on`): `pct fstrim 104`.
+
+**Shrinking a thin volume needs the volume recreated, not just `lvreduce`.** Reducing
+LXC 104's `mp1` from 812 GB to 20 GB (`resize2fs` to 19 GB → `lvreduce -L 20G` →
+`resize2fs` to fill) left ~15 GB of thin-pool mappings stranded *beyond the new end of
+the volume*: unreachable by `fstrim` because they are no longer addressable through the
+device, so `data_percent` read **91% on a volume holding 1.9 GB** and would have climbed
+past 100% as the filesystem grew. `lvs` reports the percentage against the new, smaller
+`LSize`, which is what makes it look alarming — the absolute figure barely moved
+(1.95% of 812 GB = 15.8 GB, then 91.31% of 20 GB = 18.7 GB: the same blocks). The only
+way to release them is to drop the thin device: create a fresh volume, copy the data over
+with `rsync -aHAX --numeric-ids`, repoint the config, then `lvremove` the old one. Also
+note `pct fstrim` is the right tool — `fstrim` *inside* an unprivileged container fails
+with `FITRIM ioctl failed: Operation not permitted`, and ext4 will not re-issue a discard
+for a range it has already trimmed, so a second run reporting a tiny number is normal and
+is not evidence the first one failed.
 
 **A pre-start hookscript guards the boot race.** The fstab entry is `nofail` and
 `pve-guests.service` has no `local-fs` ordering, so a cold boot could otherwise start
