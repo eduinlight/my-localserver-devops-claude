@@ -184,6 +184,14 @@ find <tree> -type f -links +1 | wc -l                              # must match 
 Reclaiming freed thin-pool space needs a trim, since deleting files inside a guest does
 not return blocks to the pool (`mp1` has `discard=on`): `pct fstrim 104`.
 
+**A pre-start hookscript guards the boot race.** The fstab entry is `nofail` and
+`pve-guests.service` has no `local-fs` ordering, so a cold boot could otherwise start
+LXC 104 (`onboot: 1`) before the disk mounts, bind-mount the bare empty directory, and
+let Sonarr/Radarr mark the whole library missing. `local:snippets/media-mount-guard.pl`
+fails closed if `/mnt/media-8tb` is unmounted *or* mounted-but-empty; the fstab entry
+also carries `x-systemd.before=pve-guests.service`. `nofail` stays on purpose — a dead
+disk should still let every other guest boot. Script and rationale in `services/media/`.
+
 ---
 
 ## DNS Service (VMID 111)
