@@ -220,6 +220,30 @@ RUN cargo install dioxus-cli --version "${DIOXUS_CLI_VERSION}" --locked \
     && { unreadable="$(find "$CARGO_HOME" "$RUSTUP_HOME" ! -perm -o+r -print -quit)"; \
          [ -z "$unreadable" ] || { echo "unreadable by the runner user: $unreadable" >&2; exit 1; }; }
 
+# §3.7 — Keep $CARGO_HOME/bin free of regular files.
+#
+# Swatinem/rust-cache (used by the lightchat workflows, `cache-bin` defaults to true) deletes
+# every *regular file* in $CARGO_HOME/bin in its post step. It keeps only binaries recorded in
+# .crates2.json and then subtracts the ones that already existed when the cache was restored —
+# which is precisely the set this image ships, so the keep-list comes out empty. On 2026-09-01
+# it wiped `rustup` and `dx` from gh-runner-docker-2 and left the fourteen rustup proxy symlinks
+# (cargo, rustc, rustfmt, clippy-driver, ...) dangling: `command -v cargo` fails, and the job
+# reports the toolchain as missing even though /usr/local/rustup is untouched.
+#
+# It skips symlinks (`dirent.isFile()`), so moving the two real binaries to /usr/local/bin and
+# leaving symlinks behind makes the directory nothing but symlinks and the cleanup a no-op. The
+# proxies still resolve: cargo -> rustup -> /usr/local/bin/rustup, and rustup dispatches on the
+# invoked basename, which the extra hop does not change.
+RUN mv "$CARGO_HOME/bin/rustup" /usr/local/bin/rustup \
+    && ln -s /usr/local/bin/rustup "$CARGO_HOME/bin/rustup" \
+    && mv "$CARGO_HOME/bin/dx" /usr/local/bin/dx \
+    && ln -s /usr/local/bin/dx "$CARGO_HOME/bin/dx" \
+    && chmod 0755 /usr/local/bin/rustup /usr/local/bin/dx \
+    # Fail the build if anything is left that rust-cache would delete.
+    && { leftover="$(find "$CARGO_HOME/bin" -type f -print -quit)"; \
+         [ -z "$leftover" ] || { echo "regular file in \$CARGO_HOME/bin: $leftover" >&2; exit 1; }; } \
+    && rustup --version && cargo --version && rustc --version && dx --version
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

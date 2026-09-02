@@ -620,6 +620,21 @@ while `cargo`/`rustc`/`dx --version` all look fine. The Dockerfile now asserts r
 build time. Repair a live container with
 `docker exec -u root <c> chmod -R a+rwX /usr/local/cargo /usr/local/rustup`.
 
+**`$CARGO_HOME/bin` holds only symlinks, on purpose** (Sep 2026). `Swatinem/rust-cache@v2`
+(`cache-bin` defaults to true) deletes every *regular file* in `$CARGO_HOME/bin` in its post
+step — its keep-list comes from `.crates2.json` minus whatever already existed at cache-restore
+time, which is exactly what this image ships, so the list is empty. It emptied
+`/usr/local/cargo/bin` on `gh-runner-docker-2`, leaving the fourteen rustup proxies (`cargo`,
+`rustc`, …) dangling and jobs reporting
+`this runner is missing 2 tool(s): cargo target:wasm32-unknown-unknown` — while
+`/usr/local/rustup` sat fully intact, wasm32 std included. It hits **one runner at a time**,
+whichever took that job, so it looks like drift rather than a bad image. The cleanup skips
+symlinks, so the real `rustup` and `dx` now live in `/usr/local/bin` with symlinks left behind;
+the Dockerfile asserts `find $CARGO_HOME/bin -type f` is empty. A dangling proxy reports as
+*absent*, never broken — check `readlink -f /usr/local/cargo/bin/cargo`, not just `command -v`.
+`docker compose up -d --force-recreate <name>` repairs a hit container (the deletions are in the
+writable layer; the registration is in the volume).
+
 **Playwright:** `/opt/ms-playwright` needs `chmod -R a+rwX`, not `a+rX` — a root-owned browser
 cache reads fine and then fails any in-job `playwright install` with
 `EACCES ... mkdir '/opt/ms-playwright/__dirlock'`. The browser build is version-locked

@@ -132,6 +132,54 @@ pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -
 That path must exist and be executable. Bump `PLAYWRIGHT_VERSION` and the browser in the same
 change. The Dockerfile asserts both at build time.
 
+## `$CARGO_HOME/bin` must contain nothing but symlinks
+
+`Swatinem/rust-cache` (the lightchat workflows use `@v2`, where `cache-bin` defaults to true)
+runs a cleanup in its post step that **deletes regular files from `$CARGO_HOME/bin`**. It builds
+its keep-list from `.crates2.json` and then subtracts every binary that was already present when
+the cache was restored — which is exactly the set this image ships, so the list comes out empty
+and it deletes all of them.
+
+On 2026-09-01 that emptied `/usr/local/cargo/bin` on `gh-runner-docker-2`: `rustup` and `dx`,
+the only two regular files there, were removed. The fourteen rustup proxies (`cargo`, `rustc`,
+`rustfmt`, `clippy-driver`, …) are symlinks to `rustup`, so they survived — and dangled. Jobs
+then failed with:
+
+```
+Error: this runner is missing 2 tool(s) the job needs: cargo target:wasm32-unknown-unknown
+```
+
+which is misleading twice over: `/usr/local/rustup` was completely intact, wasm32 std included,
+and the runner had not been "provisioned by hand" wrong — it had been *un*provisioned by the job
+before it. Only the runner that happened to take that job was affected, which is why this
+presents as one broken runner out of four rather than a bad image.
+
+The cleanup skips symlinks (it tests `dirent.isFile()`), so the fix is to leave it nothing to
+delete: the real `rustup` and `dx` live in `/usr/local/bin` and `$CARGO_HOME/bin` holds symlinks
+to them. The proxies still work — `cargo` → `rustup` → `/usr/local/bin/rustup`, and rustup
+dispatches on the basename it was invoked as, which the extra hop does not change. The Dockerfile
+asserts the directory holds zero regular files at build time.
+
+```sh
+pct exec 124 -- docker exec -u runner gh-runner-docker-2 bash --noprofile --norc -c \
+  'find /usr/local/cargo/bin -type f'
+```
+
+Empty output is correct. If a future tool does land there as a regular file, it is one
+`rust-cache` post step away from disappearing.
+
+A job hitting a *dangling* proxy reports the tool as absent, never as broken, so check the link
+target and not just `command -v`:
+
+```sh
+pct exec 124 -- docker exec -u runner gh-runner-docker-2 bash --noprofile --norc -c \
+  'readlink -f /usr/local/cargo/bin/cargo && cargo --version'
+```
+
+Recreating the container (`docker compose up -d --force-recreate <name>`) also repairs this,
+since the deletions live in the writable layer and the registration lives in the volume. That is
+the recovery; the symlink layout is what stops it recurring.
+
 ## kubectl access
 
 All four carry the `kubectl` label and share one read-only kubeconfig at
