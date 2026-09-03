@@ -75,6 +75,7 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | 106 | gitlab-runner-docker | running | 192.168.0.24 | 8 GB | 8 | 100 GB |
 | 107 | gitlab-runner-shell | running | 192.168.0.25 | 1 GB | 8 | 20 GB |
 | 108 | immich | running | 192.168.0.26 | 8 GB | 4 | 208 GB |
+| 109 | vaultwarden | running | 192.168.0.29 | 2 GB | 2 | 16 GB |
 | 111 | dns | running | 192.168.0.21 | 512 MB | 8 | 8 GB |
 | 112 | debian | **TEMPLATE** | — | 512 MB | 8 | — |
 | 114 | traefik | running | 192.168.0.7 | 512 MB | 1 | 8 GB |
@@ -110,7 +111,7 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 | gitlab | GitLab services | 105, 106, 107 |
 | ia | AI/ML services | 118 |
 | kubernete | k3s cluster + template | 200, 201, 202, 9000 |
-| tools | Tools and apps | 100, 104, 108, 114, 120, 122 |
+| tools | Tools and apps | 100, 104, 108, 109, 114, 120, 122 |
 | work | Work VMs and ubuntu template | 102, 119, 123 |
 
 Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --pool` is not valid).
@@ -136,6 +137,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
 - **Media:** Media server (104, 1.3TB disk), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100)
+- **Secrets:** Vaultwarden (109) at https://secrets.lan — see "## Vaultwarden" below and `services/vaultwarden/`
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** Manager 210 (192.168.0.65) + workers 211/212 — see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202 — see "## k3s Cluster" section below.
@@ -170,6 +172,7 @@ When deploying a new service, clone the appropriate template based on whether th
 | planer.lan | `@` | 192.168.0.7 | ⚠️ **ORPHANED** — LXC 121 removed Aug 2026; resolves to Traefik, which 502s |
 | proxmox.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS, insecureSkipVerify to PVE:8006) |
 | s3.lan | `@` + `*` (wildcard) | 192.168.0.5 | Direct |
+| secrets.lan | `@` | 192.168.0.7 | Traefik (HTTPS only, self-signed; HTTP 301s to HTTPS) |
 
 ---
 
@@ -201,11 +204,12 @@ When deploying a new service, clone the appropriate template based on whether th
 | openclaw.yml | openclaw.lan | 192.168.0.55 — ⚠️ **DEAD** | 18789 | yes |
 | planer.yml | planer.lan | 192.168.0.121 — ⚠️ **DEAD** | 80 | no |
 | proxmox.yml | proxmox.lan | 192.168.0.15 (PVE) | 8006 | yes |
+| secrets.yml | secrets.lan | 192.168.0.29 (vaultwarden) | 8080 | yes (plus a `web` router that redirects to HTTPS) |
 | registry.yml | registry.docker.lan | 192.168.0.27 (registry) | 5000 | no |
 | mirror.yml | mirror.docker.lan | 192.168.0.27 (registry-mirror) | 5001 | no |
 | dashboard.yml | dashboard.k3s.lan | 192.168.0.60 (k3s cp NodePort) | 30443 | yes (HTTPS frontend, HTTPS backend with insecureSkipVerify via `dashboardTransport` defined inline) |
 | argocd.yml | argocd.k3s.lan | 192.168.0.60 (k3s-cp-01 NodePort) | 30080 | no |
-| tls.yml | — | — | — | cert config for openclaw.lan, proxmox.lan, registry.docker.lan, dashboard.k3s.lan |
+| tls.yml | — | — | — | cert config for openclaw.lan, proxmox.lan, registry.docker.lan, dashboard.k3s.lan, secrets.lan |
 | transports.yml | — | — | — | proxmoxTransport (insecureSkipVerify) |
 | k3s-dashboard.yml | dashboard.k3s.lan | 192.168.0.60 | 30443 | ⚠️ duplicates `dashboard.yml` — same Host rule, two routers |
 | spice.yml | — (`HostSNI(*)`) | — | — | TCP passthrough, undocumented |
@@ -377,6 +381,58 @@ pct exec 118 -- /usr/local/bin/ai-gpu comfy-down  # give the card back
 Backups on the PVE host: `/root/ai-backups/` (open-webui chat DB, old LXC configs,
 driver installer) and `/var/lib/vz/dump/vzdump-lxc-118-2026_08_26-12_11_40.tar.zst`
 (22 GB, 118's pre-migration ollama state).
+
+---
+
+## Vaultwarden (VMID 109)
+
+Bitwarden-compatible password server (`vaultwarden/server`), cloned from LXC template
+101 (docker). Full detail in `services/vaultwarden/README.md`.
+
+- **IP:** 192.168.0.29, pool `tools`, 2 cores / 2 GB / 16 GB
+- **Access:** `ssh root@192.168.0.15` then `pct exec 109 -- bash -c '...'`
+- **Compose file:** `/home/admin/docker-compose.yaml` (mirrored at `services/vaultwarden/`)
+- **Data:** named volume `admin_vaultwarden-data` at `/data` — SQLite DB, attachments, RSA keys
+- **Registry:** `/etc/docker/daemon.json` points at `mirror.docker.lan` (Docker Hub CDN is blackholed)
+
+| Purpose | Address |
+|---------|---------|
+| Web vault | https://secrets.lan |
+| Admin panel | https://secrets.lan/admin |
+| Direct (behind proxy) | http://192.168.0.29:8080 |
+
+**HTTPS is mandatory, not cosmetic.** The Bitwarden web vault uses WebCrypto, which
+browsers only expose on a secure origin, so `secrets.lan` terminates TLS at Traefik
+with a self-signed cert (`/home/admin/certs/secrets.lan.{crt,key}` on LXC 114) and the
+`web` entrypoint 301-redirects to `websecure`. Vaultwarden itself speaks plain HTTP;
+`DOMAIN=https://secrets.lan` is what it emits in links and WebAuthn origins.
+
+**The admin token must be single-quoted in `.env`.** It is stored as an Argon2id PHC
+string (OWASP preset `m=19456,t=2,p=1`); Compose interpolates `$` in unquoted *and*
+double-quoted values, which silently mangles `$argon2id$...` and locks you out of
+`/admin`. The plaintext token is in `secrets.local.md` (untracked). Generate a new
+hash with the `argon2` CLI inside the LXC — the image's own `vaultwarden hash`
+subcommand demands a TTY and panics under `pct exec`:
+
+```sh
+pct exec 109 -- bash -c 'echo -n "<token>" | argon2 "$(openssl rand -base64 24)" -id -k 19456 -t 2 -p 1 -e'
+```
+
+**No SMTP is configured, and invites still work.** `SIGNUPS_ALLOWED=false` with
+`INVITATIONS_ALLOWED=true`: inviting an address from the admin panel writes an
+`invitations` row that pre-authorizes that one address, so the person can register at
+https://secrets.lan with that exact email even though signups are closed. Nothing is
+emailed — pass the instruction along out-of-band. Verified 2026-09-03: an invited
+address gets `200` from `POST /identity/accounts/register`, an uninvited one `400`.
+Mail is off on purpose — sending from a residential IP with no PTR is rejected almost
+everywhere, and the `mail.lan` host is gone. To enable it later, add `SMTP_HOST`,
+`SMTP_PORT`, `SMTP_SECURITY`, `SMTP_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` to
+`.env` and reference them from the compose environment.
+
+When driving the admin API with curl, **send an empty body (`-d ''`) to routes that
+take no data**. Rocket treats a JSON body on a bodyless route as a route mismatch and
+returns `404`, which is indistinguishable from a wrong URL — `/admin/users/<id>/delete`
+gives `200` with `-d ''` and `404` with `-d '{}'`.
 
 ---
 

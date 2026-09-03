@@ -1,0 +1,26 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - DOMAIN=https://secrets.lan
+      - ADMIN_TOKEN=${ADMIN_TOKEN:?set it in .env}
+      - SIGNUPS_ALLOWED=${SIGNUPS_ALLOWED:-false}
+      - INVITATIONS_ALLOWED=true
+      - SHOW_PASSWORD_HINT=false
+      - LOG_LEVEL=warn
+      - ROCKET_WORKERS=4
+    volumes:
+      - vaultwarden-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/alive || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  vaultwarden-data:
