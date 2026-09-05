@@ -35,6 +35,10 @@ services:
     image: ghcr.io/hotio/qbittorrent
     ports:
       - "8080:8080"
+      # BitTorrent listen port. Without this qBittorrent is outbound-only:
+      # trackers report seeders and none of them are ever connectable.
+      - "62093:62093/tcp"
+      - "62093:62093/udp"
     environment:
       - PUID=1000
       - PGID=1000
