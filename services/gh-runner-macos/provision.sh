@@ -66,6 +66,35 @@ if [ -f "$ENVFILE" ] && ! grep -q '^OPENSSL_DIR=' "$ENVFILE"; then
   echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$ENVFILE"
 fi
 
+step 'Mobile tooling: XcodeGen + Android platform-tools'
+brew install xcodegen
+brew install --cask android-platform-tools
+xcodegen --version
+adb version | head -1
+
+step 'Android SDK + emulator + AVD'
+brew install --cask temurin@17 android-commandlinetools
+SDK="$HOME/Library/Android/sdk"
+mkdir -p "$SDK"
+yes | sdkmanager --sdk_root="$SDK" --licenses >/dev/null 2>&1 || true
+sdkmanager --sdk_root="$SDK" 'cmdline-tools;latest' platform-tools emulator \
+  'platforms;android-35' 'system-images;android-35;google_apis;x86_64' >/dev/null
+if ! "$SDK/emulator/emulator" -list-avds | grep -qx Pixel_9_API_35; then
+  echo no | ANDROID_HOME="$SDK" "$SDK/cmdline-tools/latest/bin/avdmanager" create avd \
+    -n Pixel_9_API_35 -k 'system-images;android-35;google_apis;x86_64' -d pixel_9
+fi
+if [ -f "$ENVFILE" ]; then
+  grep -q '^ANDROID_HOME=' "$ENVFILE" || echo "ANDROID_HOME=$SDK" >> "$ENVFILE"
+  grep -q '^JAVA_HOME=' "$ENVFILE" || echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$ENVFILE"
+fi
+sysctl kern.hv_support
+
+step 'iOS simulator runtime'
+if ! xcrun simctl list runtimes | grep -q '^iOS '; then
+  xcodebuild -downloadPlatform iOS
+fi
+xcrun simctl list runtimes
+
 # --------------------------------------------------------- power management
 # A CI runner must never sleep.
 step 'Disable sleep'

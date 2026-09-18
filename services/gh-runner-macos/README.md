@@ -10,6 +10,9 @@ at a ×10 multiplier, the largest share of the org's usage).
 - **Specs:** 8 GB RAM, 4 cores, 80 GB disk
 - **OS:** macOS Sequoia 15.7.9, **x86_64** (arch label `X64`)
 - **Login:** `ssh eduin@192.168.0.245` (dev box key; password/PIN in `secrets.local.md`)
+  — `authorized_keys` holds `light@light-pc` and, since Sep 2026,
+  `light@Eduins-MacBook-Pro.local`. A machine whose key is missing gets `Permission denied` and then
+  `Too many authentication failures`; install it through the console as in step 2.
 
 ## This is a hackintosh — the honest version
 
@@ -33,7 +36,7 @@ The critical pieces (`/etc/pve/qemu-server/126.conf`):
 args: -device isa-applesmc,osk="ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc" \
       -smbios type=2 -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0 \
       -device usb-tablet,bus=xhci.0 -global nec-usb-xhci.msi=off \
-      -cpu Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,+hypervisor,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check
+      -cpu Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,+hypervisor,+vmx,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check
 sata0: <OpenCore.qcow2>     # bootloader (boot: order=sata0)
 sata2: <80G Macintosh HD>   # macOS
 vga: vmware
@@ -57,8 +60,11 @@ Boot the VM, at the OpenCore picker choose **macOS Base System**, then in the
 installer: **Utilities → Disk Utility → View → Show All Devices**, select the ~85 GB
 QEMU disk, **Erase** as `APFS` / `GUID Partition Map` named `Macintosh HD`, quit, then
 **Reinstall macOS** onto it. ~30–60 min with auto-reboots. This part is GUI-only —
-drive it via the Proxmox noVNC console (or the QMP mouse helper at
-`/root/vmclick.py` on the PVE host).
+drive it via the Proxmox noVNC console (or the QMP helpers on the PVE host:
+`/root/vmclick.py` for the mouse, `/root/vmtype.py <vmid> text|combo <keys>` for the
+keyboard). Once macOS is installed the QMP **mouse clicks stop registering** (the pointer
+moves, nothing activates) while the keyboard keeps working — open apps with Spotlight
+(`combo meta_l+spc`, type the name, `combo ret`).
 
 ### 2. Enable SSH (interactive, one time)
 System Settings → General → Sharing → **Remote Login** on. (`systemsetup
@@ -74,8 +80,51 @@ mkdir -p ~/.ssh && curl -fsS http://192.168.0.15:8000/id.pub >> ~/.ssh/authorize
 ssh eduin@192.168.0.245 'SUDO_PW=<pw> bash -s' < provision.sh
 ```
 Installs Command Line Tools (clang + git + macOS SDK), rustup + stable + the three
-Apple targets, Homebrew + `openssl@3` + `pkg-config`, disables sleep, and sets up
-auto-login. Idempotent.
+Apple targets, Homebrew + `openssl@3` + `pkg-config`, the mobile tooling (`xcodegen`,
+`android-platform-tools` for `adb`), disables sleep, and sets up auto-login. Idempotent.
+
+The mobile tooling was added Sep 2026 after the lightchat mobile workflow's two macOS
+jobs died with `xcodegen: command not found` and `adb: command not found`. Both land in
+`/usr/local/bin`, which is already in `~/actions-runner/.path`, so no runner restart is
+needed. Verify the way a job sees it, not from a login shell:
+```sh
+ssh eduin@192.168.0.245 'env -i HOME=$HOME PATH="$(cat ~/actions-runner/.path)" \
+  /bin/bash --noprofile --norc -c "command -v xcodegen adb"'
+```
+
+## Mobile test targets (Sep 2026)
+
+For the `takuteku-core` `mobile.yml` jobs (`android-interface` and `ios`), which run
+instrumented tests on this box rather than just building.
+
+**iOS simulator.** `xcodebuild -downloadPlatform iOS` (8.9 GB) — without a runtime every
+simulator destination fails with `iOS 18.5 is not installed`. Xcode 16.4 now delivers the
+**18.6** runtime, not 18.5; that is fine, 16.4 lists its devices as eligible. The stock
+device set includes `iPhone 16`, the workflow's default, so `IOS_DESTINATION` is unset.
+Check eligibility, not just presence: `xcodebuild -project App.xcodeproj -scheme App
+-showdestinations`.
+
+**Android emulator.** SDK at `~/Library/Android/sdk` (the path `scripts/android-emulator.sh`
+defaults to): `emulator`, `platform-tools`, `platforms;android-35`, the
+`google_apis;x86_64` API 35 image, and `cmdline-tools;latest`. AVD **`Pixel_9_API_35`**
+(`pixel_9` profile, 2 GB RAM, 2 cores) — the workflow default, so `ANDROID_AVD` is unset.
+JDK is `temurin@17`. `ANDROID_HOME` and `JAVA_HOME` are in `~/actions-runner/.env`
+because Gradle does not find the SDK on its own. Cold boot to `sys.boot_completed` is
+~66 s against the script's 450 s budget.
+
+- **The emulator needs `+vmx` in the VM's `-cpu` args.** Without it `kern.hv_support`
+  is 0, Hypervisor.framework is unavailable and the x86_64 image falls back to software
+  emulation, which does not boot inside the budget. The host already had
+  `kvm_intel nested=Y`. Do not trust `emulator -accel-check` — it reported HVF as usable
+  while `kern.hv_support` was still 0. Pre-change config kept at
+  `/root/126.conf.bak-2026-09-18` on the PVE host.
+- **Use the SDK's own `avdmanager`**, not Homebrew's. The `android-commandlinetools` cask
+  is only the bootstrap `sdkmanager`; its `avdmanager` resolves packages against
+  `/usr/local/share/android-commandlinetools` and fails with
+  `Package path is not valid. Valid system image paths are: null` even with
+  `ANDROID_HOME` set. `sdkmanager` takes `--sdk_root`; `avdmanager` does not.
+- Memory is the ceiling: 8 GB VM, 2 GB of it the emulator, plus Gradle. One mobile job
+  at a time — which a single runner enforces anyway.
 
 `openssl@3` is required because `cargo install dioxus-cli` (the `dx` bundler) links
 OpenSSL, which macOS doesn't ship as a dev library. It's **keg-only**, so the runner
