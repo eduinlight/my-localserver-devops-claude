@@ -23,9 +23,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 # §3.1 base packages, §3.6 desktop packaging (AppImage/deb/rpm + the webkit stack dx links
 # against). §4.3's Chromium libraries are handled by playwright install-deps further down,
 # which picks the right names for this distro — the doc's list is the 24.04 t64 spelling.
+#
+# libclang-dev is not optional despite nothing in the workspace calling clang directly: any
+# crate whose build script uses `bindgen` dlopens libclang.so at build time. lightchat reaches
+# it through v4l2-sys-mit (camera capture), which dies with
+#   Unable to find libclang: "couldn't find any valid shared libraries matching:
+#   ['libclang.so', 'libclang-*.so', ...]"
+# — a panic in the build script, ~800 crates into the build, not a missing-header error from
+# cc. The `clang` package brings the driver; libclang-dev brings the shared library and the
+# builtin headers (libclang-common-*-dev) that bindgen needs to parse system headers at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
+      clang \
       curl \
       desktop-file-utils \
       dpkg-dev \
@@ -34,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       gnupg \
       libayatana-appindicator3-dev \
+      libclang-dev \
       libfuse2 \
       libgtk-3-dev \
       librsvg2-dev \
@@ -49,7 +60,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       wget \
       xz-utils \
       zip \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # clang-sys resolves libclang by globbing, not by asking the compiler, so assert the
+    # library is where it will look rather than trusting that the package installed.
+    && { ls /usr/lib/llvm-*/lib/libclang.so* /usr/lib/*/libclang*.so* 2>/dev/null | head -1 \
+         | grep -q . || { echo "no libclang.so for bindgen" >&2; exit 1; }; }
 
 # §3.4 — the CLI only; the daemon is the LXC's, reached through the socket bind-mount.
 RUN install -m 0755 -d /etc/apt/keyrings \

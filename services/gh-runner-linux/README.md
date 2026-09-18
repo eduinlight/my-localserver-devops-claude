@@ -84,7 +84,7 @@ traversable without marking every source file executable.
 
 | Tool | Version | §|
 |---|---|---|
-| Rust (`stable`, floor 1.94) + `rustfmt`, `clippy` | 1.98.0 today | 3.2 |
+| Rust (`stable`, floor 1.94) + `rustfmt`, `clippy` | 1.98.1 today | 3.2 |
 | targets `wasm32-unknown-unknown`, `aarch64-linux-android` | — | 3.2 |
 | `dx` (dioxus-cli) | 0.7.10 | 3.3 |
 | Temurin JDK | 17 | 3.5 |
@@ -98,6 +98,7 @@ traversable without marking every source file executable.
 | Playwright chromium + system libs | 1.49.1 | 4.3 |
 | `awscli` | apt | 4.4 |
 | AppImage/deb/rpm packaging, webkit stack, `openssl` | apt | 3.1, 3.6 |
+| `clang` + `libclang-dev` — `bindgen`'s runtime dependency | apt | 3.1 |
 
 Versions are `ARG`s — override at build time without editing the file. Keep them in step with
 §2 of the doc; nothing enforces them automatically.
@@ -107,6 +108,28 @@ Versions are `ARG`s — override at build time without editing the file. Keep th
 
 Chromium's system libraries come from `playwright install-deps`, not the package list in §4.3
 — that list is the 24.04 `t64` spelling and does not resolve on jammy.
+
+## `bindgen` needs libclang, and says so from 800 crates in
+
+Nothing in the workspace invokes `clang`, so it is easy to leave out — but any crate whose
+build script uses `bindgen` dlopens `libclang.so` at build time. lightchat reaches it through
+`v4l2-sys-mit` (camera capture, via `nokhwa`). Without it the job compiles ~800 of 899 crates
+and then panics inside the build script:
+
+```
+error: failed to run custom build command for `v4l2-sys-mit v0.3.0`
+  Unable to find libclang: "couldn't find any valid shared libraries matching:
+  ['libclang.so', 'libclang-*.so', 'libclang.so.*', 'libclang-*.so.*'],
+  set the `LIBCLANG_PATH` environment variable ..."
+```
+
+`clang-sys` finds the library by **globbing well-known directories**, not by asking the
+compiler, which is why `LIBCLANG_PATH` is offered as the escape hatch and why the Dockerfile
+asserts the glob matches rather than trusting apt. `libclang-dev` is the package that matters:
+it provides `/usr/lib/llvm-14/lib/libclang.so` plus, through `libclang-common-14-dev`, the
+builtin headers bindgen needs to parse system headers at all. The `clang` driver alone is not
+enough. The uapi header being parsed (`/usr/include/linux/videodev2.h`) was already present
+via `linux-libc-dev`, so this never looked like a missing-header problem.
 
 ## Playwright: the cache must be writable, and the version must match
 

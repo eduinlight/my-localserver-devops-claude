@@ -590,6 +590,12 @@ repo at `services/gh-runner-linux/` (see its README for the full picture).
   Node 22, Playwright 1.49.1 + chromium, `gh`/`jq`/`yq`/`kubectl`/`kustomize`/`actionlint`,
   and the AppImage/deb/rpm packaging stack. The lightchat harness's `scripts/ensure-tools.sh`
   only *verifies* and fails the job by name — provisioning is this Dockerfile's job.
+- **`clang` + `libclang-dev`** were added Sep 2026. Nothing calls `clang` directly, but any
+  crate whose build script uses `bindgen` dlopens `libclang.so`; lightchat reaches it through
+  `v4l2-sys-mit` and failed with `Unable to find libclang` after compiling ~800 of 899 crates.
+  `clang-sys` globs for the library instead of asking the compiler, so the Dockerfile asserts
+  the glob matches. `libclang-dev` (not just `clang`) is the package — it carries the `.so` and
+  the builtin headers.
 
 **Two rules govern the image, both from the named volume mounted over `/home/runner`:**
 
