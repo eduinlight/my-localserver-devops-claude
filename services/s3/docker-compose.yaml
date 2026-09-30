@@ -1,0 +1,71 @@
+services:
+  traefik:
+    image: traefik:v2.11
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - garage_net
+
+  garage:
+    image: dxflrs/garage:v2.3.0
+    restart: unless-stopped
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - ./meta:/var/lib/garage/meta
+      - ./data:/var/lib/garage/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - 3900:3900
+      - 3902:3902
+    labels:
+      - "traefik.enable=true"
+      # S3 API Endpoint
+      - "traefik.http.routers.garage_s3.rule=Host(`s3.lan`)"
+      - "traefik.http.routers.garage_s3.entrypoints=web"
+      - "traefik.http.routers.garage_s3.service=garage_s3"
+      - "traefik.http.services.garage_s3.loadbalancer.server.port=3900"
+      # Web hosting Endpoint
+      - "traefik.http.routers.garage_web.rule=HostRegexp(`{subdomain:.+}.s3.lan`)"
+      - "traefik.http.routers.garage_web.entrypoints=web"
+      - "traefik.http.routers.garage_web.service=garage_web"
+      - "traefik.http.services.garage_web.loadbalancer.server.port=3902"
+    networks:
+      - garage_net
+
+  webui:
+    image: khairul169/garage-webui:1.1.0
+    restart: unless-stopped
+    depends_on:
+      - garage
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+    env_file:
+      - ./webui.env
+    environment:
+      API_BASE_URL: http://garage:3903
+      S3_ENDPOINT_URL: http://garage:3900
+      S3_REGION: garage
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    ports:
+      - 3909:3909
+    networks:
+      - garage_net
+
+networks:
+  garage_net:
+    driver: bridge

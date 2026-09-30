@@ -36,7 +36,7 @@ metadata can corrupt. Check with
 `lvs --units g -o lv_name,lv_size,data_percent pve/data`.
 
 Guests do not return freed blocks to the pool on their own unless the volume has
-`discard=on` (the k3s/swarm VMs do; most LXCs and VMs 102/115/119/123 do not).
+`discard=on` (the k3s/swarm VMs do; most LXCs and VM 115 do not).
 A periodic trim recovers a surprising amount — this reclaimed ~147 GB in Aug 2026:
 
 ```sh
@@ -53,15 +53,38 @@ forge trees plus two duplicate 7 GB copies of the same SDXL checkpoint.
 
 Templates 101/112 fail with `Read-only file system` — expected, harmless.
 
-**RAM is the other tight resource.** 62 GB total; VM memory is *reserved* while LXC
-memory is only a *cap*. Running VMs reserve ~38 GB and LXC 105 (gitlab) alone holds
-~15 GB, so the host sits near capacity and swap stays full. Check real usage before
-adding or growing a VM:
+**RAM is the other tight resource.** 62 GB total, and the host runs near capacity with swap
+largely full. VM memory is *reserved* in config but **allocated lazily** — so a VM's configured
+size is a poor guide to what it actually costs. Judge by host-side RSS instead, which is the
+only number that reflects reality:
 
 ```sh
-free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
-  pct exec $c -- free -m 2>/dev/null | awk -v c=$c '/Mem:/ {print c, $3" MB"}'; done
+ps -eo rss,args | grep '[k]vm -id' \
+  | sed -E 's/^ *([0-9]+).*-id ([0-9]+).*-name ([^,]*),.*/\1 \2 \3/' \
+  | sort -rn | awk '{printf "VM %-5s %-22s %6.2f GB\n", $2, $3, $1/1048576}'
 ```
+
+Sep 2026 measurements showing why config size misleads in *both* directions:
+
+| Guest | Configured | Real host RSS | Note |
+|-------|-----------|---------------|------|
+| swarm-w-01 (211) | 6 GB | **0.82 GB** | shrinking its config would have freed almost nothing |
+| gh-runner-windows (125) | 8 GB | **7.27 GB** | guest only *uses* 2.4 GB — Windows hoards cache |
+| mac-runner (126) | 8 GB | 6.4–7.3 GB | genuinely used |
+
+For LXCs, split anon from cache — `memory.current` counts page cache, which the kernel
+reclaims for free and which made the containers look far heavier than they are:
+
+```sh
+for d in /sys/fs/cgroup/lxc/*/; do
+  awk -v c="$(basename $d)" '/^anon /{a=$2} /^file /{f=$2}
+    END {printf "LXC %-5s anon=%5.2fGB cache=%5.2fGB\n", c, a/2^30, f/2^30}' $d/memory.stat
+done
+```
+
+That split is the real budget: Sep 2026 showed ~48.6 GB genuinely committed (KVM RSS + LXC
+anon) with ~13 GB of it merely page cache — LXC 104 alone held 5 GB of evictable cache. The
+best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB workload.
 
 ### Networking
 
@@ -72,13 +95,13 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 
 | VMID | Name | Status | IP | RAM | Cores | Disk |
 |------|------|--------|-----|-----|-------|------|
-| 100 | s3 | running | 192.168.0.5 | 512 MB | 1 | 8 GB |
+| 100 | s3 (Garage) | running | 192.168.0.5 | 512 MB | 1 | **200 GB** (Sep 2026, was 8 GB) |
 | 101 | docker | **TEMPLATE** | — | 512 MB | 1 | — |
-| 103 | docker-registry | running | 192.168.0.27 | 2 GB | 4 | 100 GB |
+| 103 | docker-registry | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.27 | 2 GB | 4 | 100 GB |
 | 104 | media | running | 192.168.0.22 | 8 GB | 4 | 40+20 GB + 8 TB HDD |
-| 105 | gitlab | running | 192.168.0.23 | 16 GB | 16 | 200 GB |
-| 106 | gitlab-runner-docker | running | 192.168.0.24 | 8 GB | 8 | 100 GB |
-| 107 | gitlab-runner-shell | running | 192.168.0.25 | 1 GB | 8 | 20 GB |
+| 105 | gitlab | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.23 | 16 GB | 16 | 200 GB |
+| 106 | gitlab-runner-docker | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.24 | 8 GB | 8 | 100 GB |
+| 107 | gitlab-runner-shell | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.25 | 1 GB | 8 | 20 GB |
 | 108 | immich | running | 192.168.0.26 | 8 GB | 4 | 208 GB |
 | 109 | vaultwarden | running | 192.168.0.29 | 2 GB | 2 | 16 GB |
 | 111 | dns | running | 192.168.0.21 | 512 MB | 8 | 8 GB |
@@ -93,31 +116,35 @@ free -g; for c in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
 
 | VMID | Name | Status | IP | RAM | Cores | Disks | Pool |
 |------|------|--------|-----|-----|-------|-------|------|
-| 102 | work-ubuntu-01 | stopped | — | 8 GB | 2 | 100 GB | work |
+| 110 | work-arch-01 | running | (no agent reporting) | 8 GB (balloon 2) | 12 | 164 GB | — |
 | 115 | win11 | **TEMPLATE** | — | 4 GB | 4 | 100 GB (+2 unused) | — |
-| 119 | work-ubuntu-02 | stopped | — | 8 GB | 2 | 100 GB | work |
-| 123 | ubuntu | **TEMPLATE** | — | 8 GB | 2 | 100 GB | work |
-| 125 | gh-runner-windows | running | 192.168.0.244 | 8 GB (balloon 4) | 8 | 150 GB | github |
+| 125 | gh-runner-windows | running | 192.168.0.244 | 6 GB (balloon 4) — **staged, applies at next reboot** | 8 | 150 GB | github |
 | 126 | mac-runner | running | 192.168.0.245 | 8 GB | 4 | 80 GB | github |
-| 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | 40 GB | kubernete |
-| 201 | k3s-w-01 | running | 192.168.0.61 | 6 GB | 2 | 60 GB | kubernete |
-| 202 | k3s-w-02 | running | 192.168.0.62 | 6 GB | 2 | 60 GB | kubernete |
-| 210 | swarm-mgr-01 | running | 192.168.0.65 | 2 GB | 2 | 90 GB | docker |
-| 211 | swarm-w-01 | running | 192.168.0.66 | 6 GB | 4 | 60 GB | docker |
-| 212 | swarm-w-02 | running | 192.168.0.67 | 6 GB | 4 | 60 GB | docker |
+| 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | **200 GB** | kubernete |
+| 201 | k3s-w-01 | running | 192.168.0.61 | **12 GB** | **4** | **200 GB** | kubernete |
+| 202 | k3s-w-02 | running | 192.168.0.62 | **12 GB** | **4** | **200 GB** | kubernete |
+| 203 | k3s-w-03 | running | 192.168.0.63 | **12 GB** | **4** | **200 GB** | kubernete |
+| 210 | swarm-mgr-01 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.65 | 2 GB | 2 | 90 GB | docker |
+| 211 | swarm-w-01 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.66 | 6 GB | 4 | 60 GB | docker |
+| 212 | swarm-w-02 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.67 | 6 GB | 4 | 60 GB | docker |
 | 9000 | k3s-template | **TEMPLATE** | — | 2 GB | 2 | 3 GB (cloud-init) | kubernete |
+
+**VMs 102 `work-ubuntu-01`, 119 `work-ubuntu-02` and 123 `ubuntu` no longer exist** — they
+were listed here but are absent from `qm list` as of Sep 2026. VM 110 `work-arch-01` is an
+Arch work VM with `onboot: 0` that was started by hand; it is in no pool and holds ~4.9 GB
+of host RAM whenever it is up.
 
 ### Resource Pools
 
 | Pool | Comment | Members |
 |------|---------|---------|
-| docker | Docker services | 103, 210, 211, 212 |
+| docker | Docker services — **entirely shut down Sep 2026**, kept for possible future use | 103, 210, 211, 212 |
 | github | GitHub CI services | 124, 125, 126 |
-| gitlab | GitLab services | 105, 106, 107 |
+| gitlab | GitLab services — **entirely shut down Sep 2026**, data preserved | 105, 106, 107 |
 | ia | AI/ML services | 118 |
-| kubernete | k3s cluster + template | 200, 201, 202, 9000 |
+| kubernete | k3s cluster + template | 200, 201, 202, 203, 9000 |
 | tools | Tools and apps | 100, 104, 108, 109, 114, 120, 122 |
-| work | Work VMs and ubuntu template | 102, 119, 123 |
+| work | Work VMs and ubuntu template — **all members gone**, pool is empty | (none) |
 
 Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --pool` is not valid).
 
@@ -125,27 +152,39 @@ Add a guest to a pool with `pvesh set /pools/<name> --vms <vmid>` (`pct set --po
 
 - **LXC 101 (docker)** — Template for services that run via Docker/docker-compose inside an LXC.
 - **LXC 112 (debian)** — Template for services that run natively via systemd (no Docker).
-- **VM 9000 (k3s-template)** — Debian 13 cloud-init template with `admin` user pre-baked (NOPASSWD sudo, dev box SSH key; password in `secrets.local.md`, untracked). Use this for any new VM clone (k3s, swarm, anything Debian-based). **Do not pass `--ciuser`/`--cipassword` on `qm clone`** — values are baked into the image.
-- **VM 123 (ubuntu)** — Older Ubuntu Server template (no cloud-init). Kept for compatibility; prefer 9000 for new builds.
+- **VM 9000 (k3s-template)** — Debian 13 cloud-init template with `admin` user pre-baked (NOPASSWD sudo; password in `secrets.local.md`, untracked). Use this for any new VM clone (k3s, swarm, anything Debian-based). **Do not pass `--ciuser`/`--cipassword` on `qm clone`** — values are baked into the image. ⚠️ **Its baked-in SSH key is `light@light-pc`, not this MacBook's** — a fresh clone refuses the Mac's key until you inject it via `qm guest exec` (see "Adding a worker node" under "## k3s Cluster").
+- ~~**VM 123 (ubuntu)**~~ — no longer exists (absent from `qm list`, Sep 2026).
 
 ### Proxmox Pools
 
-- **kubernete** — k3s cluster (VMs 200/201/202) + the cloud-init template (9000).
-- **docker** — Docker registry LXC (103) + new Swarm (VMs 210/211/212).
+- **kubernete** — k3s cluster (VMs 200/201/202/203) + the cloud-init template (9000).
+- **docker** — Docker registry LXC (103) + Swarm (VMs 210/211/212). **All four are shut down
+  as of Sep 2026** and kept only so the stack can be revived if Swarm is ever needed again.
 
 When deploying a new service, clone the appropriate template based on whether the service needs Docker (101) or can run with systemd (112) — or use VM template 9000 for a full-VM workload.
 
 ### Key Services
 
-- **CI/CD:** GitLab (105) + 2 runners (106 docker, 107 shell) + Docker Registry (103) + GitHub Actions runners — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
-- **Kubernetes:** k3s cluster — cp (200) + 2 workers (201, 202), ArgoCD + dashboard in-cluster
+- **CI/CD:** ⚠️ GitLab (105) + runners (106, 107) and Docker Registry (103) are **all stopped** as of Sep 2026 — CI is GitHub Actions only — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
+- **Kubernetes:** k3s cluster — cp (200) + 3 workers (201/202/203, **12 GB / 4 cores each**), ArgoCD + dashboard in-cluster. **The only deployment target as of Sep 2026.**
 - **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
 - **Media:** Media server (104 — library on the 8 TB HDD, see `services/media/`), Immich photos (108), Calibre-web (120)
-- **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100)
+- **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100 — Garage v2.3.0 in Docker, single node,
+  `replication_factor = 1`, data/meta at `/home/admin/{data,meta}` on the rootfs). **Keep the Garage
+  layout capacity at or below the real disk size** (`garage layout assign -c <N>G 7fd7a57ffde32734`) —
+  it was set to 186 GiB on an 8 GB disk, so Garage never refused writes and the `takuteku-maps` bucket
+  (7 GiB of map tarballs) filled the disk to 100% in Sep 2026, breaking uploads and metadata snapshots.
+  Now 200 GB rootfs with the layout set to 180G. Run the CLI with `pct exec 100 -- docker exec admin-garage-1 /garage <cmd>`.
+  **Web UI:** http://console.s3.lan (`khairul169/garage-webui:1.1.0`, port 3909, bcrypt login in
+  `/home/admin/webui.env` — single-quoted because of the `$`s; credentials in `secrets.local.md`). It
+  reads `admin_token` from the mounted `garage.toml` and talks to the admin API on `garage:3903`,
+  which is **not published** on the LXC — test it from the compose network. `garage.toml` is a
+  single-file bind mount: edit it in place (not `sed -i`) and `docker compose restart garage`.
+  Compose mirrored at `services/s3/docker-compose.yaml`.
 - **Secrets:** Vaultwarden (109) at https://secrets.lan — see "## Vaultwarden" below and `services/vaultwarden/`
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
-- **Docker Swarm (VMs):** Manager 210 (192.168.0.65) + workers 211/212 — see "## Docker Swarm" section below.
-- **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202 — see "## k3s Cluster" section below.
+- **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.
+- **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
 
 ---
 
@@ -230,14 +269,14 @@ disk should still let every other guest boot. Script and rationale in `services/
 | gitlab.lan | `@` | 192.168.0.7 | Traefik (port 8929) |
 | grafana.lan | `@` → .7 (Traefik); `otlp`, `loki`, `tempo`, `prom` → 192.168.0.122 | mixed | UI via Traefik, ingest/component APIs direct to LGTM LXC |
 | immich.lan | `@` | 192.168.0.26 | Direct |
-| k3s.lan | `@`, `cp`, `api` → .60, `w1` → .61, `w2` → .62 | direct | Cluster nodes |
+| k3s.lan | `@`, `cp`, `api` → .60, `w1` → .61, `w2` → .62, `w3` → .63 | direct | Cluster nodes |
 | k3s.lan | `dashboard`, `argocd` | 192.168.0.7 | Traefik → NodePort |
 | mail.lan | `@` | 192.168.0.6 | ⚠️ **ORPHANED** — target host is gone. Zone still has full mail records (DKIM, SPF, DMARC, SRV); kept in case mail is rebuilt |
 | media.lan | `@`, `request`, `radar`, `sonar`, `qbittorrent` | 192.168.0.7 | Traefik, subdomains are CNAMEs |
 | openclaw.lan | `@` | 192.168.0.7 | ⚠️ **ORPHANED** — LXC 116 removed Aug 2026; resolves to Traefik, which 502s |
 | planer.lan | `@` | 192.168.0.7 | ⚠️ **ORPHANED** — LXC 121 removed Aug 2026; resolves to Traefik, which 502s |
 | proxmox.lan | `@` | 192.168.0.7 | Traefik (HTTPS/TLS, insecureSkipVerify to PVE:8006) |
-| s3.lan | `@` + `*` (wildcard) | 192.168.0.5 | Direct |
+| s3.lan | `@` + `*` (wildcard) → .5; `console` → .7 | mixed | S3 API direct; `console` = Garage web UI via Traefik (specific record beats the wildcard) |
 | secrets.lan | `@` | 192.168.0.7 | Traefik (HTTPS only, self-signed; HTTP 301s to HTTPS) |
 
 ---
@@ -279,6 +318,7 @@ disk should still let every other guest boot. Script and rationale in `services/
 | transports.yml | — | — | — | proxmoxTransport (insecureSkipVerify) |
 | k3s-dashboard.yml | dashboard.k3s.lan | 192.168.0.60 | 30443 | ⚠️ duplicates `dashboard.yml` — same Host rule, two routers |
 | spice.yml | — (`HostSNI(*)`) | — | — | TCP passthrough, undocumented |
+| s3-console.yml | console.s3.lan | 192.168.0.5 (garage-webui) | 3909 | no |
 
 ⚠️ `openclaw.yml` and `planer.yml` point at removed containers. Traefik keeps serving
 the routers, so those hosts return 502 rather than NXDOMAIN. Delete the route files
@@ -287,6 +327,23 @@ and the matching DNS zones if those services are not coming back.
 ---
 
 ## Docker Registry & Mirror (VMID 103)
+
+> **⚠️ SHUT DOWN as of Sep 2026.** LXC 103 is stopped with `onboot: 0`. Everything below
+> describes the service as it was configured and still is on disk — nothing was deleted, so
+> `pct start 103` brings it back intact. Two reasons it went away: all deployments moved to
+> Kubernetes, and **the ISP Docker Hub blackhole that justified the mirror is resolved**
+> (verified Sep 2026 — `auth.docker.io` answers 200 and the Cloudflare CDN answers 403 in
+> 0.12 s; a blackhole times out instead). The registry held only Swarm-era images
+> (`caxper-uat-*`, `todo-list/*`, `test`), so nothing Kubernetes needs. **k3s never used it** —
+> the nodes have no `registries.yaml` and pull straight from ghcr.io/docker.io/quay.io.
+>
+> **Still pointing at the dead mirror:** LXC 106, 107, 109, 118 and 122 keep
+> `registry-mirrors`/`insecure-registries` entries for `mirror.docker.lan` in
+> `/etc/docker/daemon.json`. Their *running* containers are unaffected, but the next
+> `docker compose pull` on those hosts will try a mirror that is down. Docker falls back to
+> Docker Hub on mirror failure, so this degrades to slow rather than broken — clean the
+> entries out when convenient. 76 GB of disk (64 GB registry + 12 GB mirror cache) is still
+> held by the stopped container's volumes.
 
 Two `registry:2` containers run side-by-side on LXC 103 from `/home/admin/docker-compose.yaml`:
 
@@ -312,7 +369,40 @@ Two `registry:2` containers run side-by-side on LXC 103 from `/home/admin/docker
 
 ---
 
+## GitLab (VMIDs 105, 106, 107) — SHUT DOWN Sep 2026
+
+> **⚠️ The whole `gitlab` pool is stopped** (`onboot: 0` on all three). Nothing was deleted —
+> the 95 GB `gitlab` Docker volume and the 259 MB `gitlab-postgres` volume are intact on LXC
+> 105, so `pct start 105` brings it back (allow several minutes; GitLab is slow to boot).
+> Restart order if reviving: 105 first, then 106/107 so the runners find a live coordinator.
+>
+> **Why it went:** GitLab was the single largest non-VM memory consumer — ~5.0 GB anon
+> (six Ruby workers at ~1.2 GB each) and ~6.8 GB resident, for a service with **14 projects
+> whose most recent activity was 2026-07-22**, two months before shutdown. The only thing
+> still running was a scheduled pipeline firing daily at 09:33 on `project=1` for ~6 seconds.
+> Stopping the pool freed **5.4 GB of real host RAM**, which is what funded taking all three
+> k3s workers to 12 GB.
+>
+> **Verified safe first:** ArgoCD syncs every Application from **github.com**
+> (`lightchat-cd`, `lightnotes-cd`, `takuteku-core-cd`) and the cluster contains **zero**
+> references to `git.lan`/`gitlab.lan`, so nothing in Kubernetes depends on it. `git.lan` and
+> `gitlab.lan` now resolve to a host that is down — the Traefik route and DNS zones were left
+> in place for an easy revival.
+
+---
+
 ## Docker Swarm (VMs)
+
+> **⚠️ SHUT DOWN as of Sep 2026 — all deployments are Kubernetes now.** VMs 210/211/212 were
+> gracefully shut down (manager first, so it could not trigger reschedule churn as the workers
+> went) and set `onboot: 0`. **Nothing was destroyed:** disks, named volumes, swarm raft state
+> and the `caxper-uat` postgres data are all intact on `local-lvm`, so the cluster can be
+> restarted with `qm start 210 && qm start 211 && qm start 212` (manager first, so the workers
+> rejoin a live leader). The `caxper-uat` and `tel-bot-youtube-downloader` stacks were left
+> deployed and will come back with the nodes.
+>
+> Shutting these down freed ~3.2 GB of *real* host RAM, 14 GB of VM memory reservation and
+> 10 CPU cores, which is what funded the k3s expansion below.
 
 Replaced the LXC-based swarm (formerly VMIDs 109/110/122) with VMs in 2026-04 to escape the privileged-LXC + overlay-network breakage and IP-change leave/rejoin pain. Apps continue running unchanged on Swarm.
 
@@ -335,11 +425,94 @@ Replaced the LXC-based swarm (formerly VMIDs 109/110/122) with VMs in 2026-04 to
 
 Built 2026-04 alongside Docker Swarm. Standalone k3s, not coupled with Swarm.
 
-- **Control plane:** VM 200 `k3s-cp-01` — **192.168.0.60** (k3s v1.34.6+k3s1, Debian 13)
-- **Workers:** VM 201 `k3s-w-01` (.61), VM 202 `k3s-w-02` (.62)
+- **Control plane:** VM 200 `k3s-cp-01` — **192.168.0.60** (k3s v1.34.6+k3s1, Debian 13), 4 GB / 2 cores
+- **Workers:** all three at **12 GB / 4 cores / 200 GB** (Sep 2026) — VM 201 `k3s-w-01` (.61),
+  VM 202 `k3s-w-02` (.62), VM 203 `k3s-w-03` (.63, added Sep 2026). Cluster total 40 GB RAM.
+  The control plane is also on a 200 GB disk.
 - **Template:** VM 9000 `k3s-template` (Debian 13 cloud-init, reusable for any new VM)
 - **Pool:** `kubernete`
 - **Login:** `ssh admin@192.168.0.60` (NOPASSWD sudo; password in `secrets.local.md`, untracked)
+
+### Node sizing — why w-01 is the odd one out
+
+**A pod cannot be split across nodes**, so a service requesting 8 GB needs one node with more
+than 8 GB *allocatable*; adding more 6 GB workers does nothing for it. That is why the Sep 2026
+expansion made **w-01 asymmetric (12 GB / 4 cores)** rather than growing every node evenly —
+w-01 is the node big workloads land on. It reports ~11.7 GB capacity, and an 8 Gi pod was
+verified to schedule on it. Keep that headroom in mind before filling w-01 with small pods.
+
+Growing a node is a reboot: `kubectl drain`, `qm shutdown`, `qm set <id> -memory <MB> -cores <n>`,
+`qm start`, `kubectl uncordon`. **`kubectl get nodes` reports stale capacity for a minute or two
+after the node returns** — it showed `Ready` with the *old* 6 GB while the VM had been up for 13
+seconds. Confirm against `qm status <id> --verbose | grep maxmem`, not the node object.
+
+**w-01 holds five node-pinned `local-path` PVs** (`lightnotes/data-mongo-0`,
+`lightchat-staging/data-mongo-0`, and three `takuteku-staging-maps` tiles volumes). Those
+StatefulSet pods **cannot migrate** — a drain evicts them and they sit Pending until the node is
+back, so any w-01 reboot means real downtime for mongo and the map tiles. They return on their
+own once it rejoins. Build and join a replacement node *before* draining, so the ordinary
+Deployments have somewhere to land.
+
+### Growing a node's disk — online, no reboot
+
+All four nodes moved from 40/60 GB to **200 GB** in Sep 2026. The Debian cloud image puts root
+on `/dev/sda1` as the **last** partition on disk (`sda14`/`sda15` sit *before* it despite the
+higher numbers), so it grows in place while mounted:
+
+```sh
+qm resize <vmid> scsi0 200G                      # on the PVE host
+ssh admin@<node> 'sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1'
+```
+
+**kubelet caches `ephemeral-storage` at startup and will keep reporting the old size** — `df`
+shows 197G while `kubectl get nodes` still says 60 GB, which looks like the resize silently
+failed. Restart kubelet to re-read it: `systemctl restart k3s-agent` on a worker, `systemctl
+restart k3s` on the control plane. Running containers survive it (containerd keeps them); the
+control-plane restart does briefly drop the API server.
+
+**This deepened the thin-pool overcommit to 171%** — 2931 GB provisioned against a 1710 GB pool
+that is 54% full, with only 16 GB free in the VG, so the pool itself cannot be extended. Nothing
+is consumed until written, but if the k3s nodes ever genuinely fill their 200 GB they alone want
+800 GB against ~790 GB free. Watch it:
+
+```sh
+lvs --units g -o lv_name,lv_size,data_percent,metadata_percent pve/data
+```
+
+`activation/thin_pool_autoextend_threshold` is still unset (LVM warns on every resize) and would
+have almost no room to extend into anyway. Treat `data_percent` as the number to alarm on.
+
+### Adding a worker node
+
+```sh
+qm clone 9000 <vmid> --name k3s-w-0N --full --storage local-lvm --pool kubernete
+qm set <vmid> --memory 6144 --cores 2 --cpu host \
+  --ipconfig0 ip=192.168.0.<N>/24,gw=192.168.0.1 \
+  --nameserver 192.168.0.21 --searchdomain lan --onboot 1 --agent enabled=1
+qm resize <vmid> scsi0 60G
+qm start <vmid>
+# then, from the dev box — pin the version or the node joins on a newer k3s than the cluster:
+TOKEN=$(ssh admin@192.168.0.60 'sudo cat /var/lib/rancher/k3s/server/node-token')
+ssh admin@192.168.0.<N> "export K3S_URL=https://192.168.0.60:6443 K3S_TOKEN='$TOKEN' \
+  INSTALL_K3S_VERSION=v1.34.6+k3s1; curl -sfL https://get.k3s.io | sudo -E sh -s - agent"
+```
+
+Then add a `wN` A record to `/etc/bind/zones/db.k3s.lan` on LXC 111, bump the zone serial, and
+`rndc reload k3s.lan`.
+
+**Template 9000 does not carry this Mac's SSH key.** Its baked-in `authorized_keys` holds one
+key commented `light@light-pc`, so a fresh clone answers `Permission denied (publickey,password)`
+from the MacBook — the same reason .66/.67 were unreachable. VMs .60 and .65 work only because
+the Mac key was added to them by hand after provisioning. Until the template is rebuilt, push the
+key in through the guest agent (which works before SSH does):
+
+```sh
+PUBKEY=$(cat ~/.ssh/id_ed25519.pub)
+ssh root@192.168.0.15 "qm guest exec <vmid> -- /bin/bash -c 'echo \"$PUBKEY\" >> /home/admin/.ssh/authorized_keys'"
+```
+
+Done for .61, .62 and .63 in Sep 2026. `qm guest exec` is also the way to debug a node that
+boots but will not accept SSH — it reaches `systemctl`/`cloud-init` with no network login.
 - **kubectl:** Dev box `~/.kube/config` is a symlink to `~/.kube/k3s-home.yaml` (server: 192.168.0.60:6443). `kubectl get nodes` works directly.
 - **Built-in Traefik disabled** at install time (`--disable=traefik`) — homelab Traefik on LXC 114 handles ingress. `klipper-lb` (k3s ServiceLB) is kept.
 
