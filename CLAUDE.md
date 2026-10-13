@@ -24,7 +24,7 @@
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
 | local | dir | ~94 GB | ~60 GB | ~30 GB | 63.4% |
-| local-lvm | lvmthin | ~1.7 TB | ~868 GB | ~841 GB | ~50.8% |
+| local-lvm | lvmthin | ~1.7 TB | ~1244 GB | ~466 GB | ~72.7% (Oct 2026) |
 | /mnt/media-8tb | ext4 (host mount, not PVE storage) | 7.3 TiB | 690 GB | 6.7 TiB | 10% |
 
 **`local-lvm` is thin-overcommitted** — provisioned volumes sum to ~2.19 TB against a
@@ -110,7 +110,7 @@ best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB work
 | 118 | ai | running | 192.168.0.118 | 24 GB | 12 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
-| 124 | github-runner | running | 192.168.0.28 | 8 GB | 4 | 100 GB |
+| 124 | github-runner | running | 192.168.0.28 | 8 GB | 4 | **150 GB** (Oct 2026, was 100) |
 
 ### Virtual Machines
 
@@ -119,7 +119,8 @@ best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB work
 | 110 | work-arch-01 | running | (no agent reporting) | 8 GB (balloon 2) | 12 | 164 GB | — |
 | 115 | win11 | **TEMPLATE** | — | 4 GB | 4 | 100 GB (+2 unused) | — |
 | 125 | gh-runner-windows | running | 192.168.0.244 | 6 GB (balloon 4) — **staged, applies at next reboot** | 8 | 150 GB | github |
-| 126 | mac-runner | running | 192.168.0.245 | 8 GB | 4 | 80 GB | github |
+| 126 | mac-runner | running | 192.168.0.245 | 8 GB | **8** | **170 GB** (Oct 2026, was 120) | github |
+| 127 | mac-runner-2 | running | 192.168.0.237 | 8 GB | **8** | **170 GB** (Oct 2026, was 120) | github — clone of 126, Sep 2026 |
 | 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | **200 GB** | kubernete |
 | 201 | k3s-w-01 | running | 192.168.0.61 | **12 GB** | **4** | **200 GB** | kubernete |
 | 202 | k3s-w-02 | running | 192.168.0.62 | **12 GB** | **4** | **200 GB** | kubernete |
@@ -139,7 +140,7 @@ of host RAM whenever it is up.
 | Pool | Comment | Members |
 |------|---------|---------|
 | docker | Docker services — **entirely shut down Sep 2026**, kept for possible future use | 103, 210, 211, 212 |
-| github | GitHub CI services | 124, 125, 126 |
+| github | GitHub CI services | 124, 125, 126, 127 |
 | gitlab | GitLab services — **entirely shut down Sep 2026**, data preserved | 105, 106, 107 |
 | ia | AI/ML services | 118 |
 | kubernete | k3s cluster + template | 200, 201, 202, 203, 9000 |
@@ -165,7 +166,7 @@ When deploying a new service, clone the appropriate template based on whether th
 
 ### Key Services
 
-- **CI/CD:** ⚠️ GitLab (105) + runners (106, 107) and Docker Registry (103) are **all stopped** as of Sep 2026 — CI is GitHub Actions only — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VM 126 (`services/gh-runner-macos/`, hackintosh via OpenCore)
+- **CI/CD:** ⚠️ GitLab (105) + runners (106, 107) and Docker Registry (103) are **all stopped** as of Sep 2026 — CI is GitHub Actions only — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VMs 126 + 127 (`services/gh-runner-macos/`, hackintosh via OpenCore, two interchangeable runners)
 - **Kubernetes:** k3s cluster — cp (200) + 3 workers (201/202/203, **12 GB / 4 cores each**), ArgoCD + dashboard in-cluster. **The only deployment target as of Sep 2026.**
 - **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
 - **Media:** Media server (104 — library on the 8 TB HDD, see `services/media/`), Immich photos (108), Calibre-web (120)
@@ -181,6 +182,11 @@ When deploying a new service, clone the appropriate template based on whether th
   which is **not published** on the LXC — test it from the compose network. `garage.toml` is a
   single-file bind mount: edit it in place (not `sed -i`) and `docker compose restart garage`.
   Compose mirrored at `services/s3/docker-compose.yaml`.
+  **The web UI can only browse buckets that have a global alias** — its browse handler resolves
+  the bucket with `GetBucketInfo?globalAlias=<name>`, so a bucket created with only a key-local
+  alias (what an S3 `CreateBucket` call from a client key produces) lists fine but cannot be
+  opened. Fix with `garage bucket alias <bucket-id> <name>`; done for `takuteku-maps`
+  in Sep 2026. Bucket `d8dd02521bb4a2f0` (local alias `other` on key `test`) has the same issue.
 - **Secrets:** Vaultwarden (109) at https://secrets.lan — see "## Vaultwarden" below and `services/vaultwarden/`
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.

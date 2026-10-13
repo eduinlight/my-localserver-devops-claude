@@ -1,13 +1,18 @@
-# macOS GitHub Actions Runner (VM 126)
+# macOS GitHub Actions Runners (VMs 126, 127)
 
 Self-hosted macOS runner for `eduinlight-org`, for the lightchat `macos` + `ios` CI
 jobs and the `release-desktop-macos` matrix — off GitHub-hosted minutes (macOS bills
 at a ×10 multiplier, the largest share of the org's usage).
 
-- **VMID:** 126 `mac-runner`
-- **IP:** 192.168.0.245 (DHCP)
+| VMID | Name | Runner | IP (DHCP) |
+|------|------|--------|-----------|
+| 126 | `mac-runner` | `gh-runner-macos` | 192.168.0.245 |
+| 127 | `mac-runner-2` | `gh-runner-macos-2` | 192.168.0.237 |
+
 - **Pool:** `github`
-- **Specs:** 8 GB RAM, 4 cores, 80 GB disk
+- **Specs (both):** 8 GB RAM, 8 cores (Sep 2026, was 4), 120 GB disk
+- **Labels (both):** `self-hosted, macOS, X64, homelab` — interchangeable, so a
+  `[self-hosted, macOS, homelab]` job lands on whichever is free
 - **OS:** macOS Sequoia 15.7.9, **x86_64** (arch label `X64`)
 - **Login:** `ssh eduin@192.168.0.245` (dev box key; password/PIN in `secrets.local.md`)
   — `authorized_keys` holds `light@light-pc` and, since Sep 2026,
@@ -152,6 +157,48 @@ runner shows `online`:
 | `.github/workflows/ci.yml` | `ios` | `[self-hosted, macOS, homelab]` |
 | `.github/workflows/release-desktop-macos.yml` | `bundle` (both matrix arches) | `[self-hosted, macOS, homelab]` |
 
+## Second runner — VM 127 (Sep 2026)
+
+VM 127 is a full clone of 126, so it carries the same Xcode 16.4, iOS runtime, Android
+SDK/AVD, Homebrew tooling, `.env` and daily cleanup agent. **126 was never stopped:**
+
+- A live `qm clone` of the running VM fails — the drive-mirror aborts on the EFI vars
+  disk with `Source and target image have different sizes` (LVM rounds the 4M efidisk up
+  to a full extent). Clone from an LVM-thin snapshot instead, which does not pause the VM:
+  ```sh
+  qm snapshot 126 clone127
+  qm clone 126 127 --snapname clone127 --name mac-runner-2 --full --storage local-lvm --pool github
+  qm delsnapshot 126 clone127
+  ```
+  The copy is crash-consistent; APFS came up clean. ~120 GB, several minutes.
+- **The clone boots as the old runner.** It carries 126's `.runner`/`.credentials` and
+  LaunchAgent, and auto-login starts it. GitHub refused it with `A session for this runner
+  already exists` while 126 held the session, so no job was stolen — but boot the clone
+  with `link_down=1` on `net0` if you want to be certain. Then, on the clone:
+  ```sh
+  launchctl bootout gui/$(id -u)/actions.runner.eduinlight-org.gh-runner-macos
+  rm ~/Library/LaunchAgents/actions.runner.eduinlight-org.gh-runner-macos.plist
+  cd ~/actions-runner && rm -f .runner .credentials .credentials_rsaparams .runner_migrated .service
+  sudo scutil --set ComputerName mac-runner-2   # and HostName, LocalHostName
+  sudo rm /etc/ssh/ssh_host_* && sudo ssh-keygen -A
+  ```
+  **Never run `./config.sh remove` on a clone** — it deregisters the original runner.
+- Register with a fresh name: `ssh eduin@<ip> 'bash -s' < register.sh <TOKEN> gh-runner-macos-2`
+  (a token can be minted with `gh api -X POST /orgs/eduinlight-org/actions/runners/registration-token --jq .token`).
+- **`config.sh` rewrites `~/actions-runner/.path` from the calling shell's PATH.** Over SSH
+  that is `/usr/bin:/bin:/usr/sbin:/sbin`, which silently dropped `/usr/local/bin` and every
+  job would have hit `xcodegen: command not found`. `register.sh` now exports the full PATH
+  before calling it; verify with the `env -i ... --noprofile --norc` check above.
+- The QEMU screendump of these VMs is always black once macOS is up (vmware VGA), and
+  blind-typing through `vmtype.py` into Terminal did not take — use SSH, not the console.
+- Any key press during the 2 s OpenCore timeout stops auto-boot at the picker
+  (`vmtype.py <vmid> combo right` then `combo ret` picks Macintosh HD).
+- **`qm shutdown` times out** (macOS ignores the ACPI power button here), so a config
+  change ends in `qm stop`. After that hard stop both VMs came back **parked at the picker
+  with `EFI` highlighted** instead of auto-booting (Sep 2026, raising cores 4 → 8). The
+  runner just stays offline — check with a screendump, then pick Macintosh HD with
+  `printf 'sendkey right\nsendkey ret\n' | qm monitor <vmid>` on the PVE host.
+
 ## LaunchAgent + auto-login (the macOS-specific gotcha)
 
 The runner is a **LaunchAgent**, not a daemon — it runs only inside a GUI login
@@ -198,8 +245,10 @@ Pick Xcode ≤ 16.x on Sequoia; Xcode 26.x needs a newer macOS. To upgrade Xcode
 
 ### Disk grow (done)
 
-Xcode needed more room, so the disk was grown 80 → 120 GB. The sequence, incl. the
-GPT gotcha:
+Xcode needed more room, so the disk was grown 80 → 120 GB, then 120 → 170 GB on both
+126 and 127 in Oct 2026. The second time `qm resize` was done live and a plain in-guest
+`sudo shutdown -r now` was enough for macOS to see the new size — no `qm stop` needed.
+The sequence, incl. the GPT gotcha:
 
 ```sh
 # PVE host: qm stop 126; qm resize 126 sata2 +40G; qm start 126
@@ -225,3 +274,12 @@ gives a login session, which helps).
   hot; see CLAUDE.md.
 - Reboot chain validated: cold boot → OpenCore auto-boots (2 s) → auto-login →
   LaunchAgent → runner online, no console interaction.
+
+## Daily disk cleanup
+
+`runner-disk-cleanup.sh` → `/usr/local/bin/`, run at 04:30 by the LaunchAgent
+`~/Library/LaunchAgents/lan.homelab.runner-disk-cleanup.plist` (log
+`~/Library/Logs/runner-disk-cleanup.log`). It removes stale runner versions, and while no job
+is running: old `_temp`, `_update`, `_work/<repo>` idle for 3 days, DerivedData older than 3
+days and unavailable simulators. APFS here does not discard, so the thin volume reads ~100%
+allocated on the PVE host even with 33 GB free in the guest — check `df` inside, not `lvs`.

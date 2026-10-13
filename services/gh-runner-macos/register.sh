@@ -2,7 +2,7 @@
 # Register VM 126 as an org-level GitHub Actions runner and install it as a
 # per-user LaunchAgent. Run over SSH from the dev box:
 #
-#     ssh eduin@192.168.0.245 'bash -s' < register.sh <TOKEN>
+#     ssh eduin@192.168.0.245 'bash -s' < register.sh <TOKEN> [NAME]
 #
 # Token from org eduinlight-org -> Settings -> Actions -> Runners -> New runner.
 # Registration tokens expire ~1 hour after issue.
@@ -13,12 +13,14 @@
 # needs an unlocked keychain, which only exists in a real login session.
 set -euo pipefail
 
-TOKEN="${1:?usage: register.sh <registration-token>}"
+TOKEN="${1:?usage: register.sh <registration-token> [name]}"
 URL='https://github.com/eduinlight-org'
-NAME='gh-runner-macos'
+NAME="${2:-gh-runner-macos}"
 LABELS='homelab'          # self-hosted, macOS, X64 are added by GitHub
 DIR="$HOME/actions-runner"
 VERSION='2.336.0'
+
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$DIR"; cd "$DIR"
 if [ ! -f config.sh ]; then

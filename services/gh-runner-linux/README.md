@@ -317,5 +317,28 @@ Secrets are not in this repo — see `.env.example`.
 Before this image, Rust, `dx` and the Android SDK were installed by hand into each container's
 volume, unevenly — `dx` existed on one runner of four. Those copies are now dead: jobs resolve
 everything from `/usr/local` and `/opt`. They still occupy roughly 9 GB across the four volumes
-(`~/.cargo`, `~/.rustup`, `~/android-sdk`) and can be removed. `.gradle`, `.bun` and `_work`
-are live caches — leave them.
+(`~/.cargo`, `~/.rustup`, `~/android-sdk`) and were removed on 2026-09-30. `.gradle`, `.bun`
+and `_work` are live caches — leave them.
+
+## Daily disk cleanup
+
+LXC 124 hit **100% full (324 MB free of 99 GB)** on 2026-09-30. A 2.5 GB json log from
+`lightchat-mongo-1` (a CI-started container, with no log rotation anywhere), 9.8 GB of build
+cache, unused images, the dead toolchains above and a second runner version per volume
+added up. `runner-disk-cleanup.sh` brought it to 62% and now runs from
+`/etc/cron.d/runner-disk-cleanup` at 04:30 daily (log `/var/log/runner-disk-cleanup.log`):
+
+- removes `bin.*`/`externals.*` runner versions that the `bin`/`externals` symlinks do
+  not point at (the self-updater leaves the old one behind, ~675 MB per runner)
+- for each runner **not currently running a job**: `_temp` entries older than 6 h,
+  `_update`, and any `_work/<repo>` untouched for 3 days
+- truncates any container json log over 200 MB
+- `docker image prune -a` (older than 48 h), `builder prune` (older than 24 h), stopped
+  containers, anonymous volumes
+
+`/etc/docker/daemon.json` now caps json logs at 3 × 50 MB, but only for containers created
+after the next dockerd restart — the log truncation covers the ones running now.
+
+```sh
+pct exec 124 -- /usr/local/bin/runner-disk-cleanup.sh
+```
