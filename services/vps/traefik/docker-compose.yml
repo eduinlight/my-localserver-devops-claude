@@ -1,0 +1,54 @@
+services:
+  traefik:
+    image: traefik:v3.5
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=eduinlight@gmail.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme.json
+      # - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=route53
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53
+      - --log.level=INFO
+      - --accesslog=true
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_HOSTED_ZONE_ID=${AWS_HOSTED_ZONE_ID}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acme.json:/acme.json
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.traefik.rule=Host(`traefik.eduindev.com`)'
+      - 'traefik.http.routers.traefik.entrypoints=websecure'
+      - 'traefik.http.routers.traefik.tls.certresolver=letsencrypt'
+      - 'traefik.http.routers.traefik.priority=100'
+      - 'traefik.http.services.traefik.loadbalancer.server.port=8080'
+      - 'traefik.http.routers.traefik-http.rule=Host(`traefik.eduindev.com`)'
+      - 'traefik.http.routers.traefik-http.entrypoints=web'
+      - 'traefik.http.routers.traefik-http.middlewares=traefik-https-redirect'
+      - 'traefik.http.middlewares.traefik-https-redirect.redirectscheme.scheme=https'
+    networks:
+      - traefik
+
+volumes:
+  traefik-acme:
+    driver: local
+
+networks:
+  traefik:
+    name: traefik
+    external: false
+

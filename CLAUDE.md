@@ -191,6 +191,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Observability:** LGTM stack (122) — Grafana/Loki/Tempo/Prometheus/Pyroscope + OTel Collector, see "## LGTM Observability Stack" below
 - **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
+- **Public edge:** Lightsail VPS 51.44.40.82 terminates TLS for `*.eduindev.com` and forwards over WireGuard to the in-cluster Traefik — see "## Public Edge" below. **frp is gone** (Oct 2026).
 
 ---
 
@@ -520,7 +521,7 @@ ssh root@192.168.0.15 "qm guest exec <vmid> -- /bin/bash -c 'echo \"$PUBKEY\" >>
 Done for .61, .62 and .63 in Sep 2026. `qm guest exec` is also the way to debug a node that
 boots but will not accept SSH — it reaches `systemctl`/`cloud-init` with no network login.
 - **kubectl:** Dev box `~/.kube/config` is a symlink to `~/.kube/k3s-home.yaml` (server: 192.168.0.60:6443). `kubectl get nodes` works directly.
-- **Built-in Traefik disabled** at install time (`--disable=traefik`) — homelab Traefik on LXC 114 handles ingress. `klipper-lb` (k3s ServiceLB) is kept.
+- **Built-in Traefik disabled** at install time (`--disable=traefik`). LAN `.lan` routes go through the homelab Traefik on LXC 114; **public** `*.eduindev.com` traffic goes through a separately installed Traefik in namespace `traefik` (Helm, see "## Public Edge"). `klipper-lb` (k3s ServiceLB) is kept but unused.
 
 ### Kubernetes Dashboard
 
@@ -549,6 +550,39 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.pas
 
 The `applicationsets.argoproj.io` CRD exceeds the annotation size limit for client-side apply.
 Install or upgrade it with `kubectl apply --server-side --force-conflicts`.
+
+---
+
+## Public Edge (Lightsail VPS + WireGuard)
+
+Replaced frp (frps on the VPS + one `frpc` pod per namespace) in Oct 2026. Detail in
+`services/k8s-edge/README.md` (cluster half) and `services/vps/README.md` (VPS half).
+
+```
+client ─443─▶ VPS Traefik (TLS, wildcard *.eduindev.com) ─▶ wg-easy:8000 ─DNAT─▶ 10.8.0.3:8000
+          ─▶ traefik pod in ns traefik (wg0 = 10.8.0.3 is inside this pod) ─▶ Ingress ─▶ Service
+client ─udp 7000─▶ wg-easy ─DNAT─▶ 10.8.0.3:7000 ─▶ IngressRouteUDP ─▶ lightchat/livekit:7000
+```
+
+- **VPS:** `ssh-my-lightsail` (alias → `admin@51.44.40.82` with `~/.ssh/my-lightsail-private-key.pem`).
+  Containers `traefik`, `wg-easy`, `portfolio` under `/home/admin/services/`. The forwarding
+  is wg-easy labels (router `k8s`, priority 10) plus PostUp hooks in wg-easy's DB.
+- **Cluster:** Helm release `traefik` (chart 41.7.1) in ns `traefik`, IngressClass `traefik`
+  (default). The `traefik/wg0` Secret holds peer 10.8.0.3's config — not in git.
+- **Publishing a host** = an Ingress rule in the app's CD repo. No DNS, cert or VPS change.
+- **`coredns-custom`** forwards `.lan` to BIND (192.168.0.21), so pods now resolve `*.lan`.
+
+Gotchas:
+
+- **Restarting wg-easy = ~1 min public outage**: Traefik ignores the container until its
+  healthcheck says `healthy`.
+- **Upgrading the in-cluster Traefik = ~10 s outage** (`Recreate`, one replica on purpose —
+  two pods would fight over peer 10.8.0.3).
+- **ArgoCD never syncs `Endpoints`/`EndpointSlice`** (default `resource.exclusions`). External
+  backends must be `ExternalName` Services (`allowExternalNameServices` is on).
+- **Ingress needs a status address** or ArgoCD shows the app `Progressing` forever —
+  `ingressEndpoint.ip: 51.44.40.82` in the values provides it.
+- Lightsail firewall: keep UDP 51820 and UDP 7000 open. TCP 7000 (old frps) can be closed.
 
 ---
 

@@ -1,0 +1,11 @@
+[Interface]
+PrivateKey = <peer 10.8.0.3 private key from wg-easy>
+Address = 10.8.0.3/32
+MTU = 1380
+
+[Peer]
+PublicKey = <wg-easy server public key>
+PresharedKey = <peer preshared key from wg-easy>
+AllowedIPs = 10.8.0.1/32
+PersistentKeepalive = 25
+Endpoint = vpn.eduindev.com:51820

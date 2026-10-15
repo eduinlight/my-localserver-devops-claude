@@ -1,0 +1,102 @@
+deployment:
+  replicas: 1
+  initContainers:
+    - name: wireguard
+      image: procustodibus/wireguard:v1.0.20260223-i260925
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop: [ALL]
+          add: [NET_ADMIN]
+      volumeMounts:
+        - name: wg0
+          mountPath: /etc/wireguard
+          readOnly: true
+      startupProbe:
+        exec:
+          command: [wg, show, wg0]
+        periodSeconds: 2
+        failureThreshold: 30
+      livenessProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - h=$(wg show wg0 latest-handshakes | awk '{print $2}'); [ -n "$h" ] && [ $(( $(date +%s) - h )) -lt 180 ]
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        failureThreshold: 3
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+  additionalVolumes:
+    - name: wg0
+      secret:
+        secretName: wg0
+        defaultMode: 0400
+
+updateStrategy:
+  type: Recreate
+  rollingUpdate:
+    maxUnavailable: null
+    maxSurge: null
+
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+    allowExternalNameServices: true
+    publishedService:
+      enabled: false
+    ingressEndpoint:
+      ip: 51.44.40.82
+
+ports:
+  web:
+    port: 8000
+    exposedPort: 80
+    forwardedHeaders:
+      trustedIPs:
+        - 10.8.0.1/32
+  websecure:
+    expose:
+      default: false
+  livekit:
+    port: 7000
+    exposedPort: 7000
+    protocol: UDP
+    expose:
+      default: true
+
+additionalArguments:
+  - --entryPoints.livekit.udp.timeout=60s
+
+service:
+  spec:
+    type: ClusterIP
+
+accessLog:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
