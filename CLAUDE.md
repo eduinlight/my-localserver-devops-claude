@@ -110,7 +110,7 @@ best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB work
 | 118 | ai | running | 192.168.0.118 | 24 GB | 12 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
-| 124 | github-runner | running | 192.168.0.28 | 8 GB | 4 | **150 GB** (Oct 2026, was 100) |
+| 124 | github-runner | running | 192.168.0.28 | **10 GB + 512 MB swap** (Oct 2026, was 12+8) | 4 | **150 GB** (Oct 2026, was 100) |
 
 ### Virtual Machines
 
@@ -836,14 +836,21 @@ Registration tokens expire about an hour after they are issued.
 
 ### Containerised runners (the ones that actually take the load)
 
-Alongside the native runner above, LXC 124 runs **four** containerised runners —
-`gh-runner-docker`, `-2`, `-3`, `-4` — from a locally built image
+Alongside the native runner above, LXC 124 runs **two** containerised runners —
+`gh-runner-docker` and `-2`, each capped at `mem_limit: 4608m` — from a locally built image
 `lightnotes-gh-runner:22.04`. Compose project at `/opt/gh-runner-docker/`, mirrored in this
 repo at `services/gh-runner-linux/` (see its README for the full picture).
 
-- Labels `self-hosted,Linux,X64,docker,homelab,kubectl`, identical on all four, so a job lands
+- Labels `self-hosted,Linux,X64,docker,homelab,kubectl`, identical on both, so a job lands
   on any of them — they must stay interchangeable.
 - The Docker socket is bind-mounted, so jobs share the LXC's daemon.
+- **Cut from four to two on 2026-10-16 after CI took the whole host down.** Gradle and
+  Kotlin daemons outlive the job that started them; four runners' worth of them, plus jest
+  workers, held 11.4 GB in LXC 124 (then 12 GB + 8 GB swap) with **no job running**. That
+  pushed the host to 61/62 GB with swap full, load ~176 and 92% I/O pressure — BIND on LXC 111
+  stalled, so every `.lan` name timed out, and macOS cached the router's NXDOMAIN on top.
+  The per-container `mem_limit` makes a runaway build OOM inside its own container instead.
+  `runner-home-3`/`-4` volumes were left in place; GitHub still lists those runners as offline.
 - **The whole toolchain is baked into the image** (Aug 2026): Rust stable + rustfmt/clippy +
   the wasm32 and aarch64-linux-android targets, `dx` 0.7.10, Temurin 17, the Android SDK/NDK,
   Node 22, Playwright 1.49.1 + chromium, `gh`/`jq`/`yq`/`kubectl`/`kustomize`/`actionlint`,
@@ -873,7 +880,7 @@ pct exec 124 -- docker exec -u runner gh-runner-docker bash --noprofile --norc -
 pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose build runner && docker compose up -d'
 ```
 
-`up -d` recreates all four; volumes (registrations, `_work`, gradle/bun caches) survive.
+`up -d` recreates both; volumes (registrations, `_work`, gradle/bun caches) survive.
 Rebuild while idle. For a minute afterwards each logs `Runner connect error: Conflict` while
 GitHub's old session lease expires — self-healing.
 
@@ -907,7 +914,7 @@ cache reads fine and then fails any in-job `playwright install` with
 `node -e 'console.log(require("playwright").chromium.executablePath())'` rather than checking
 that some chromium exists.
 
-**k8s access:** all four share a read-only kubeconfig at `/srv/gh-runner/kube/config` →
+**k8s access:** both share a read-only kubeconfig at `/srv/gh-runner/kube/config` →
 `/home/runner/.kube`, using a dedicated k3s ServiceAccount `gh-runner-deployer` (kube-system,
 non-expiring token, `cluster-admin` — preview deploys create/delete namespaces). Not the human
 admin credential; revoke with `kubectl delete clusterrolebinding gh-runner-deployer`.

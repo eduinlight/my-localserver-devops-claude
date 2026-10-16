@@ -198,6 +198,22 @@ SDK/AVD, Homebrew tooling, `.env` and daily cleanup agent. **126 was never stopp
   with `EFI` highlighted** instead of auto-booting (Sep 2026, raising cores 4 → 8). The
   runner just stays offline — check with a screendump, then pick Macintosh HD with
   `printf 'sendkey right\nsendkey ret\n' | qm monitor <vmid>` on the PVE host.
+- **Host memory pressure panics both macs at once** (Oct 2026). When the mobile workflow
+  fans out, three Gradle builds on LXC 124 plus both macs exhaust host RAM; the host OOM-killed
+  a Gradle daemon and seven minutes later both VMs panicked with
+  `NMIPI for unresponsive processor: TLB flush timeout` (a vCPU stalled too long), rebooted, and
+  parked at the OpenCore picker on `EFI`. Read the cause from
+  `/Library/Logs/DiagnosticReports/Kernel-*.panic` (the `macOSPanicString` field). Host
+  `vm.swappiness` was lowered to 10 (`/etc/sysctl.d/90-swappiness.conf`) so guest RAM stays resident.
+- **A panic can corrupt files on the APFS disk.** After that crash 126's Xcode had two damaged
+  binaries (`DVTFoundation`, Xcode's `Python3`): same size, wrong hash, and the inode refused
+  writes with `invalid argument`. Every iOS job died in ~20 s with
+  `Library not loaded: @rpath/DVTFoundation.framework` / `unable to find utility "simctl"`.
+  The two VMs are clones, so diff them to find the damage and copy the good file across —
+  `mv` the broken one out of the way first, since it cannot be overwritten in place:
+  ```sh
+  ssh eduin@<ip> 'cd /Applications/Xcode-16.4.0.app && find . -type f -print0 | xargs -0 -P8 -n200 shasum' | sort -k2
+  ```
 
 ## LaunchAgent + auto-login (the macOS-specific gotcha)
 

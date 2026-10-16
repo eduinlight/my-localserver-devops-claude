@@ -7,6 +7,8 @@ services:
     image: lightnotes-gh-runner:22.04
     container_name: gh-runner-docker
     restart: unless-stopped
+    mem_limit: 4608m
+    memswap_limit: 4608m
     env_file:
       - .env
     environment:
@@ -26,6 +28,8 @@ services:
     image: lightnotes-gh-runner:22.04
     container_name: gh-runner-docker-2
     restart: unless-stopped
+    mem_limit: 4608m
+    memswap_limit: 4608m
     env_file:
       - runners.env
     environment:
@@ -41,46 +45,6 @@ services:
     group_add:
       - "996"
 
-  runner-3:
-    image: lightnotes-gh-runner:22.04
-    container_name: gh-runner-docker-3
-    restart: unless-stopped
-    env_file:
-      - runners.env
-    environment:
-      RUNNER_URL: https://github.com/eduinlight-org
-      RUNNER_NAME: gh-runner-docker-3
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
-      RUNNER_EPHEMERAL: "false"
-    volumes:
-      - runner-home-3:/home/runner
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Nested under the runner-home volume; the more specific mount wins.
-      - /srv/gh-runner/kube:/home/runner/.kube:ro
-    group_add:
-      - "996"
-
-  runner-4:
-    image: lightnotes-gh-runner:22.04
-    container_name: gh-runner-docker-4
-    restart: unless-stopped
-    env_file:
-      - runners.env
-    environment:
-      RUNNER_URL: https://github.com/eduinlight-org
-      RUNNER_NAME: gh-runner-docker-4
-      RUNNER_LABELS: self-hosted,Linux,X64,docker,homelab,kubectl
-      RUNNER_EPHEMERAL: "false"
-    volumes:
-      - runner-home-4:/home/runner
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Nested under the runner-home volume; the more specific mount wins.
-      - /srv/gh-runner/kube:/home/runner/.kube:ro
-    group_add:
-      - "996"
-
 volumes:
   runner-home:
   runner-home-2:
-  runner-home-3:
-  runner-home-4:

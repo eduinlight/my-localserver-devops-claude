@@ -7,9 +7,10 @@ Provisioning follows `install-on-runners.md`; section numbers below refer to it.
 | | |
 |---|---|
 | Image | `lightnotes-gh-runner:22.04` (Ubuntu 22.04, built here — not pulled) |
-| Containers | `gh-runner-docker`, `-2`, `-3`, `-4` |
+| Containers | `gh-runner-docker`, `-2` (`-3`/`-4` removed 2026-10-16 — see CLAUDE.md) |
+| Memory | `mem_limit: 4608m` per container; LXC 124 capped at 10 GB + 512 MB swap |
 | Registered to | `https://github.com/eduinlight-org` (org-level) |
-| Labels | `self-hosted,Linux,X64,docker,homelab,kubectl` (identical on all four) |
+| Labels | `self-hosted,Linux,X64,docker,homelab,kubectl` (identical on both) |
 | Runner version | 2.336.0 (`RUNNER_VERSION` build arg) |
 | Docker | socket bind-mount, `group_add: 996` — jobs share the LXC's daemon |
 
@@ -227,7 +228,7 @@ ssh root@192.168.0.15
 pct exec 124 -- bash -c 'cd /opt/gh-runner-docker && docker compose build runner && docker compose up -d'
 ```
 
-`up -d` recreates all four. Volumes survive, so `_work`, gradle and bun caches do.
+`up -d` recreates both. Volumes survive, so `_work`, gradle and bun caches do.
 Do it while the runners are idle (`docker logs --tail 1 <container>` should say
 "Listening for Jobs"). For a minute or two afterwards each container logs
 `A session for this runner already exists` / `Runner connect error: Conflict` while
