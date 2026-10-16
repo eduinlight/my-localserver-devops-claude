@@ -192,7 +192,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
 - **Public edge:** Lightsail VPS 51.44.40.82 terminates TLS for `*.eduindev.com` and forwards over WireGuard to the in-cluster Traefik — see "## Public Edge" below. **frp is gone** (Oct 2026).
-- **Email:** takuteku.com mail (Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com)" below and the `eduinlight-org/email-cd` repo.
+- **Email:** takuteku.com + eduindev.com mail (one Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com, eduindev.com)" below and the `eduinlight-org/email-cd` repo.
 
 ---
 
@@ -595,18 +595,18 @@ Gotchas:
 
 ---
 
-## Email (takuteku.com)
+## Email (takuteku.com, eduindev.com)
 
-Self-hosted mail for **takuteku.com**, built Oct 2026. Stalwart v0.16.26 (SMTP/IMAP/JMAP/CalDAV/
+Self-hosted mail for **takuteku.com** and **eduindev.com**, built Oct 2026. Stalwart v0.16.26 (SMTP/IMAP/JMAP/CalDAV/
 CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by ArgoCD app
 `email-prod` from **`eduinlight-org/email-cd`** — that repo's README is the full runbook.
 
 | What | Where |
 |------|-------|
-| Webmail | https://webmail.takuteku.com |
+| Webmail | https://webmail.takuteku.com, https://webmail.eduindev.com (same Bulwark) |
 | Stalwart admin / JMAP / DAV | https://mail.takuteku.com (`/admin`) |
 | IMAP / submission / MX | mail.takuteku.com :993 / :465, :587 / :25 |
-| Mailboxes | `it@` (aliases `postmaster@`, `abuse@`, `dmarc@`), `support@` |
+| Mailboxes | `it@takuteku.com` (aliases `postmaster@`, `abuse@`, `dmarc@` on both domains), `support@takuteku.com`, `contact@eduindev.com` |
 | Credentials | `secrets.local.md` (untracked); k8s Secrets `email/{stalwart,bulwark,stalwart-backup}`; admin + SES SMTP also in SSM Parameter Store `/email/takuteku/*` (eu-west-3, free SecureString) |
 | Backups | nightly 03:30 → Garage bucket `email-backups` (14 days) |
 
@@ -630,6 +630,10 @@ CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by Ar
   `--export`. The StatefulSet deliberately has no `replicas` field so ArgoCD selfHeal does not
   fight the scale-down.
 - The `takuteku.com` apex has no A record; nothing in mail needs one.
+- **eduindev.com is the same server**: a `Manual` domain in the plan whose MX and clients use
+  `mail.takuteku.com`; its DNS is hand-written in the eduindev zone and SES verifies it separately.
+  Bulwark calls JMAP from the browser, so CORS for both webmail origins is a Traefik Middleware
+  (`email/stalwart-cors`), not a Stalwart header — Stalwart's static header can name one origin only.
 
 ---
 
