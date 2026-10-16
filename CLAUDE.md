@@ -193,7 +193,6 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
 - **Public edge:** Lightsail VPS 51.44.40.82 terminates TLS for `*.eduindev.com` and forwards over WireGuard to the in-cluster Traefik — see "## Public Edge" below. **frp is gone** (Oct 2026).
 - **Email:** takuteku.com + eduindev.com mail (one Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com, eduindev.com)" below and the `eduinlight-org/email-cd` repo.
-- **Project management:** Taiga at https://pm.eduindev.com in k3s namespace `project-manager` — see "## Taiga (pm.eduindev.com)" below and the `eduinlight-org/project-manager-cd` repo.
 
 ---
 
@@ -635,26 +634,6 @@ CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by Ar
   `mail.takuteku.com`; its DNS is hand-written in the eduindev zone and SES verifies it separately.
   Bulwark calls JMAP from the browser, so CORS for both webmail origins is a Traefik Middleware
   (`email/stalwart-cors`), not a Stalwart header — Stalwart's static header can name one origin only.
-
----
-
-## Taiga (pm.eduindev.com)
-
-Taiga 6.10 project management, built Oct 2026. Kustomize manifests in
-**`eduinlight-org/project-manager-cd`** (its README is the runbook), deployed by ArgoCD app
-`project-manager-prod` into namespace `project-manager`. Public through the normal edge — one
-Ingress, no DNS/cert/VPS change.
-
-- Upstream taiga-docker layout, one Deployment per service; the nginx gateway shares the
-  taiga-back pod so it can read static (copied from the image by an init container) and media.
-- Postgres 16 StatefulSet `taiga-db` (10 Gi) and PVC `taiga-media` (10 Gi) are `local-path`,
-  so back, async and the backup Job all land on the media volume's node.
-- Secrets `taiga` and `taiga-backup` were made by hand; values in `secrets.local.md`.
-- **Email is the console backend** (logged, not sent) until an SES SMTP user exists — steps in
-  the repo README.
-- Registration is closed. First admin:
-  `kubectl -n project-manager exec -it deploy/taiga-back -c back -- python manage.py createsuperuser`.
-- Backups nightly 04:00 → Garage bucket `taiga-backups` (pg_dump + media tarball, 14 days).
 
 ---
 
