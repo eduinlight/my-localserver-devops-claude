@@ -192,6 +192,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
 - **Public edge:** Lightsail VPS 51.44.40.82 terminates TLS for `*.eduindev.com` and forwards over WireGuard to the in-cluster Traefik — see "## Public Edge" below. **frp is gone** (Oct 2026).
+- **Email:** takuteku.com mail (Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com)" below and the `eduinlight-org/email-cd` repo.
 
 ---
 
@@ -562,6 +563,8 @@ Replaced frp (frps on the VPS + one `frpc` pod per namespace) in Oct 2026. Detai
 client ─443─▶ VPS Traefik (TLS, wildcard *.eduindev.com) ─▶ wg-easy:8000 ─DNAT─▶ 10.8.0.3:8000
           ─▶ traefik pod in ns traefik (wg0 = 10.8.0.3 is inside this pod) ─▶ Ingress ─▶ Service
 client ─udp 7000─▶ wg-easy ─DNAT─▶ 10.8.0.3:7000 ─▶ IngressRouteUDP ─▶ lightchat/livekit:7000
+client ─tcp 25/465/587/993─▶ VPS Traefik TCP (PROXY v2) ─▶ wg-easy:2525/4465/5587/9993 ─DNAT─▶
+          10.8.0.3 ─▶ in-cluster entrypoints smtp/submissions/submission/imaps ─▶ email/stalwart
 ```
 
 - **VPS:** `ssh-my-lightsail` (alias → `admin@51.44.40.82` with `~/.ssh/my-lightsail-private-key.pem`).
@@ -582,7 +585,50 @@ Gotchas:
   backends must be `ExternalName` Services (`allowExternalNameServices` is on).
 - **Ingress needs a status address** or ArgoCD shows the app `Progressing` forever —
   `ingressEndpoint.ip: 51.44.40.82` in the values provides it.
-- Lightsail firewall: keep UDP 51820 and UDP 7000 open. TCP 7000 (old frps) can be closed.
+- Lightsail firewall (Oct 2026): TCP 22/80/443/25/465/587/993, UDP 51820/7000. TCP 7000 (old
+  frps) was closed when the mail ports were opened — `put-instance-public-ports` replaces the
+  whole list, so always pass every port.
+- **Hosts outside `*.eduindev.com`** (e.g. `*.takuteku.com`) need their own `Host()` router on
+  the wg-easy labels with resolver **`letsencrypt-http`** (HTTP-01). The original `letsencrypt`
+  resolver is Route53 DNS-01 with `AWS_HOSTED_ZONE_ID` pinned to the eduindev zone, so it cannot
+  issue for any other domain.
+
+---
+
+## Email (takuteku.com)
+
+Self-hosted mail for **takuteku.com**, built Oct 2026. Stalwart v0.16.26 (SMTP/IMAP/JMAP/CalDAV/
+CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by ArgoCD app
+`email-prod` from **`eduinlight-org/email-cd`** — that repo's README is the full runbook.
+
+| What | Where |
+|------|-------|
+| Webmail | https://webmail.takuteku.com |
+| Stalwart admin / JMAP / DAV | https://mail.takuteku.com (`/admin`) |
+| IMAP / submission / MX | mail.takuteku.com :993 / :465, :587 / :25 |
+| Mailboxes | `it@` (aliases `postmaster@`, `abuse@`, `dmarc@`), `support@` |
+| Credentials | `secrets.local.md` (untracked); k8s Secrets `email/{stalwart,bulwark,stalwart-backup}` |
+| Backups | nightly 03:30 → Garage bucket `email-backups` (14 days) |
+
+- **No inbound port at home.** Mail ports enter at the VPS and cross the WireGuard tunnel with
+  PROXY protocol v2 on both hops, so Stalwart sees the real client IP (verified).
+- **Outbound goes only through Amazon SES** (eu-west-3, production access granted Oct 2026,
+  50k/day). IAM users: `stalwart-ses` (`ses:SendRawEmail` for `*@takuteku.com`) and
+  `stalwart-route53` (takuteku.com zone only, for Stalwart's ACME DNS-01 and DKIM publishing).
+- **Stalwart 0.16 has no config file to edit** — settings live in its DB and are declared in
+  `email-cd/prod/stalwart/plan.ndjson`, applied by an ArgoCD PostSync Job with `stalwart-cli`.
+  Gotchas found while building it:
+  - Settings changes need a reload Action (the plan ends with `ReloadSettings` +
+    `ReloadBlockedIps`), and **listener changes need a pod restart**.
+  - Stalwart's scanner auto-ban bans the **TCP peer** for HTTP, i.e. the in-cluster Traefik pod
+    — internet scanners got the whole HTTP side 403'd within minutes. `10.42.0.0/16` is an
+    `AllowedIp` in the plan for that reason.
+  - **SES rejects a message with two `DKIM-Signature` headers**, and Stalwart signs with Ed25519
+    *and* RSA by default. The plan pins `algorithms` to RSA only; SES adds its own Easy DKIM.
+- **Backups stop the server** (~1 min nightly): 0.16's only RocksDB backup is offline
+  `--export`. The StatefulSet deliberately has no `replicas` field so ArgoCD selfHeal does not
+  fight the scale-down.
+- The `takuteku.com` apex has no A record; nothing in mail needs one.
 
 ---
 

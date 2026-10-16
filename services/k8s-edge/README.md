@@ -52,6 +52,9 @@ The strategy is `Recreate`, so every upgrade drops public traffic for ~10 s.
   sessions between keepalives.
 - **`ingressEndpoint.ip = 51.44.40.82`**: without an address in `status.loadBalancer`, ArgoCD
   reports every Ingress — and so every app — as `Progressing` forever.
+- **Mail entrypoints `smtp` 2525, `submissions` 4465, `submission` 5587, `imaps` 9993** with
+  `proxyProtocol.trustedIPs = 10.8.0.1/32` and `readTimeout=0`: the VPS sends PROXY v2 over the
+  tunnel, and `email-cd`'s IngressRouteTCPs pass it on to Stalwart with a `ServersTransportTCP`.
 - **`allowExternalNameServices: true`**: `lightchat/media` is an ExternalName Service for
   `s3.lan` (Garage). ArgoCD excludes `Endpoints`/`EndpointSlice` from sync by default, so a
   selectorless Service with a hand-written EndpointSlice silently never gets its endpoints.

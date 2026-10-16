@@ -82,9 +82,49 @@ ports:
     protocol: UDP
     expose:
       default: true
+  smtp:
+    port: 2525
+    exposedPort: 2525
+    protocol: TCP
+    expose:
+      default: true
+    proxyProtocol:
+      trustedIPs:
+        - 10.8.0.1/32
+  submissions:
+    port: 4465
+    exposedPort: 4465
+    protocol: TCP
+    expose:
+      default: true
+    proxyProtocol:
+      trustedIPs:
+        - 10.8.0.1/32
+  submission:
+    port: 5587
+    exposedPort: 5587
+    protocol: TCP
+    expose:
+      default: true
+    proxyProtocol:
+      trustedIPs:
+        - 10.8.0.1/32
+  imaps:
+    port: 9993
+    exposedPort: 9993
+    protocol: TCP
+    expose:
+      default: true
+    proxyProtocol:
+      trustedIPs:
+        - 10.8.0.1/32
 
 additionalArguments:
   - --entryPoints.livekit.udp.timeout=60s
+  - --entryPoints.smtp.transport.respondingTimeouts.readTimeout=0
+  - --entryPoints.submissions.transport.respondingTimeouts.readTimeout=0
+  - --entryPoints.submission.transport.respondingTimeouts.readTimeout=0
+  - --entryPoints.imaps.transport.respondingTimeouts.readTimeout=0
 
 service:
   spec:

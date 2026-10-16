@@ -6,6 +6,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
       - "8080:8080"  # Traefik dashboard
     command:
       - --api.dashboard=true
@@ -14,6 +18,17 @@ services:
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
+      - --entrypoints.smtp.address=:25
+      - --entrypoints.submissions.address=:465
+      - --entrypoints.submission.address=:587
+      - --entrypoints.imaps.address=:993
+      - --entrypoints.smtp.transport.respondingTimeouts.readTimeout=0
+      - --entrypoints.submissions.transport.respondingTimeouts.readTimeout=0
+      - --entrypoints.submission.transport.respondingTimeouts.readTimeout=0
+      - --entrypoints.imaps.transport.respondingTimeouts.readTimeout=0
+      - --certificatesresolvers.letsencrypt-http.acme.email=eduinlight@gmail.com
+      - --certificatesresolvers.letsencrypt-http.acme.storage=/acme.json
+      - --certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web
       - --certificatesresolvers.letsencrypt.acme.email=eduinlight@gmail.com
       - --certificatesresolvers.letsencrypt.acme.storage=/acme.json
       # - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
