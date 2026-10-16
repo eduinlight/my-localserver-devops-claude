@@ -607,7 +607,7 @@ CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by Ar
 | Stalwart admin / JMAP / DAV | https://mail.takuteku.com (`/admin`) |
 | IMAP / submission / MX | mail.takuteku.com :993 / :465, :587 / :25 |
 | Mailboxes | `it@` (aliases `postmaster@`, `abuse@`, `dmarc@`), `support@` |
-| Credentials | `secrets.local.md` (untracked); k8s Secrets `email/{stalwart,bulwark,stalwart-backup}` |
+| Credentials | `secrets.local.md` (untracked); k8s Secrets `email/{stalwart,bulwark,stalwart-backup}`; admin + SES SMTP also in SSM Parameter Store `/email/takuteku/*` (eu-west-3, free SecureString) |
 | Backups | nightly 03:30 → Garage bucket `email-backups` (14 days) |
 
 - **No inbound port at home.** Mail ports enter at the VPS and cross the WireGuard tunnel with
@@ -623,8 +623,9 @@ CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by Ar
   - Stalwart's scanner auto-ban bans the **TCP peer** for HTTP, i.e. the in-cluster Traefik pod
     — internet scanners got the whole HTTP side 403'd within minutes. `10.42.0.0/16` is an
     `AllowedIp` in the plan for that reason.
-  - **SES rejects a message with two `DKIM-Signature` headers**, and Stalwart signs with Ed25519
-    *and* RSA by default. The plan pins `algorithms` to RSA only; SES adds its own Easy DKIM.
+  - **Stalwart does not DKIM-sign; SES does.** SES rejects two `DKIM-Signature` headers (Stalwart
+    defaults to Ed25519 + RSA) and rewrites `Message-ID`, which broke even a single Stalwart
+    signature. `dkimManagement` is `Manual` with no keys; SES Easy DKIM signs `d=takuteku.com`.
 - **Backups stop the server** (~1 min nightly): 0.16's only RocksDB backup is offline
   `--export`. The StatefulSet deliberately has no `replicas` field so ArgoCD selfHeal does not
   fight the scale-down.
