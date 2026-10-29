@@ -1,0 +1,10 @@
+[Unit]
+Description=Prune unused container images and trim the root filesystem
+After=k3s.service k3s-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/k3s-node-cleanup
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

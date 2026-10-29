@@ -24,7 +24,7 @@
 | Name | Type | Total | Used | Available | % |
 |------|------|-------|------|-----------|---|
 | local | dir | ~94 GB | ~60 GB | ~30 GB | 63.4% |
-| local-lvm | lvmthin | ~1.7 TB | ~1244 GB | ~466 GB | ~72.7% (Oct 2026) |
+| local-lvm | lvmthin | ~1.73 TB | ~1277 GB | ~449 GB | ~74% (25 Oct 2026, after hitting 100%) |
 | /mnt/media-8tb | ext4 (host mount, not PVE storage) | 7.3 TiB | 690 GB | 6.7 TiB | 10% |
 
 **`local-lvm` is thin-overcommitted** — provisioned volumes sum to ~2.19 TB against a
@@ -46,6 +46,27 @@ ssh admin@192.168.0.6X 'sudo fstrim -av'                               # VMs wit
 
 The VM half must be run **from the dev box**, not the PVE host — the `admin` SSH
 key lives on the dev box and the host cannot authenticate to the VMs.
+
+**The pool hit 100% on 2026-10-25** (~18:29): LXC 100 and VM 125 took write errors and LVM
+auto-grew the pool by the last 16 GB in the VG, which is now **0 GB free** — there is no
+more room to extend into. Three things had filled it:
+
+- **k3s containerd layers, ~300 GB.** Each node held 93–106 GB under
+  `io.containerd.snapshotter.v1.overlayfs` against 20–35 GB of image content: CI and preview
+  images pile up because kubelet only garbage-collects at 85% disk, and a plain
+  `crictl rmi --prune` aborts with `context canceled` on a busy disk, leaving half-deleted
+  layers behind. Use a long timeout, then trim:
+  `sudo k3s crictl --timeout 10m rmi --prune && sudo fstrim -v /` — freed 70–80 GB per node.
+- **LGTM's container log, 27 GB.** No log rotation; once `/data` filled on Oct 18, Prometheus
+  logged `no space left on device` forever and pinned the disk at 100%. Compose now caps
+  the log at 3 × 50 MB.
+- **The macOS runners, ~340 GB.** Their SATA disks have no `discard` and macOS does not
+  TRIM non-Apple disks, so every block ever written stays allocated: 127 holds 169 GB in the
+  pool for 69 GB of data. Not fixed yet.
+
+Since then, systemd timers do this three times a day: `k3s-node-cleanup` on every k3s node
+(image prune + `fstrim`) and `pve-guest-trim` on the host (`pct fstrim` on every running LXC).
+Units and install steps in `services/disk-cleanup/`.
 
 Consolidating the AI pool in Aug 2026 (three LXCs → one) took the pool from 97.4%
 back to ~92%, mostly by destroying LXC 117, which held ~70 GB of dead Fooocus and
@@ -82,9 +103,25 @@ for d in /sys/fs/cgroup/lxc/*/; do
 done
 ```
 
+**The host ran out of RAM again on 2026-10-25 ~23:20**: 63/63 GB used, swap full, load 302,
+I/O pressure 91%. DNS timed out, the PVE UI and SSH hung. Nothing was OOM-killed — it just
+thrashed. The VMs alone held ~56 GB (three k3s workers at their full 12 GB each, Mac
+runners 7.9 + 4.9 GB, cp 4 GB, Windows 3 GB) plus ~9 GB of LXC anon, with LXC 104 restarted
+and a jest CI job in LXC 124 on top. Stopping VM 126 (already unreachable for hours)
+freed ~5 GB and recovered the host within a minute. **The configured VM memory (≈64 GB)
+now exceeds physical RAM**, and the k3s workers do fill their 12 GB, so lazy allocation no
+longer saves us.
+
 That split is the real budget: Sep 2026 showed ~48.6 GB genuinely committed (KVM RSS + LXC
 anon) with ~13 GB of it merely page cache — LXC 104 alone held 5 GB of evictable cache. The
 best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB workload.
+
+**Swap: 16 GB zram in front of the 8 GB NVMe LV** (26 Oct 2026). `systemd-zram-generator`,
+`/etc/systemd/zram-generator.conf` (zstd, `swap-priority = 100`; `pve/swap` stays at -2 as the
+fallback), `vm.page-cluster = 0` in `/etc/sysctl.d/99-zram.conf`. A big disk swap was rejected on
+purpose: the outages were thrashing, not OOM, so more slow swap only stretches the stall. There is
+also nowhere safe to put it — the VG has 0 GB free, root ~28 GB, swap on the thin pool crashes the
+host if the pool fills, and swap on the 8 TB HDD is ~100× slower. The fix for RAM is fewer guests.
 
 ### Networking
 
@@ -107,7 +144,7 @@ best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB work
 | 111 | dns | running | 192.168.0.21 | 512 MB | 8 | 8 GB |
 | 112 | debian | **TEMPLATE** | — | 512 MB | 8 | — |
 | 114 | traefik | running | 192.168.0.7 | 512 MB | 1 | 8 GB |
-| 118 | ai | running | 192.168.0.118 | 24 GB | 12 | 200 GB |
+| 118 | ai | **stopped** (since 6 Oct 2026, `onboot: 1`) | 192.168.0.118 | 24 GB | 12 | 200 GB |
 | 120 | calibre-web | running | 192.168.0.120 | 2 GB | 2 | 100 GB |
 | 122 | lgtm | running | 192.168.0.122 | 8 GB | 4 | 40 GB |
 | 124 | github-runner | running | 192.168.0.28 | **10 GB + 512 MB swap** (Oct 2026, was 12+8) | 4 | **150 GB** (Oct 2026, was 100) |
@@ -118,13 +155,13 @@ best remaining reclaim target is **VM 125**, holding 7.3 GB to run a 2.4 GB work
 |------|------|--------|-----|-----|-------|-------|------|
 | 110 | work-arch-01 | running | (no agent reporting) | 8 GB (balloon 2) | 12 | 164 GB | — |
 | 115 | win11 | **TEMPLATE** | — | 4 GB | 4 | 100 GB (+2 unused) | — |
-| 125 | gh-runner-windows | running | 192.168.0.244 | 6 GB (balloon 4) — **staged, applies at next reboot** | 8 | 150 GB | github |
-| 126 | mac-runner | running | 192.168.0.245 | 8 GB | **8** | **170 GB** (Oct 2026, was 120) | github |
+| 125 | gh-runner-windows | running | 192.168.0.244 | **6 GB** (balloon 4, applied 25 Oct 2026, was 8) | 8 | 150 GB | github |
+| 126 | mac-runner | **stopped**, `onboot: 0` (26 Oct 2026 — was restarted by mistake the night of the outage; ignores ACPI shutdown, use `qm stop`) | 192.168.0.245 | 8 GB | **8** | **170 GB** (Oct 2026, was 120) | github |
 | 127 | mac-runner-2 | running | 192.168.0.237 | 8 GB | **8** | **170 GB** (Oct 2026, was 120) | github — clone of 126, Sep 2026 |
 | 200 | k3s-cp-01 | running | 192.168.0.60 | 4 GB | 2 | **200 GB** | kubernete |
-| 201 | k3s-w-01 | running | 192.168.0.61 | **12 GB** | **4** | **200 GB** | kubernete |
-| 202 | k3s-w-02 | running | 192.168.0.62 | **12 GB** | **4** | **200 GB** | kubernete |
-| 203 | k3s-w-03 | running | 192.168.0.63 | **12 GB** | **4** | **200 GB** | kubernete |
+| 201 | k3s-w-01 | running | 192.168.0.61 | **10 GB** (25 Oct 2026, was 12) | **4** | **200 GB** | kubernete |
+| 202 | k3s-w-02 | running | 192.168.0.62 | **10 GB** (25 Oct 2026, was 12) | **4** | **200 GB** | kubernete |
+| 203 | k3s-w-03 | running | 192.168.0.63 | **10 GB** (25 Oct 2026, was 12) | **4** | **200 GB** | kubernete |
 | 210 | swarm-mgr-01 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.65 | 2 GB | 2 | 90 GB | docker |
 | 211 | swarm-w-01 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.66 | 6 GB | 4 | 60 GB | docker |
 | 212 | swarm-w-02 | **stopped** (Sep 2026, `onboot: 0`) | 192.168.0.67 | 6 GB | 4 | 60 GB | docker |
@@ -167,7 +204,7 @@ When deploying a new service, clone the appropriate template based on whether th
 ### Key Services
 
 - **CI/CD:** ⚠️ GitLab (105) + runners (106, 107) and Docker Registry (103) are **all stopped** as of Sep 2026 — CI is GitHub Actions only — Linux LXC 124, Windows VM 125 (`services/gh-runner-windows/`), macOS VMs 126 + 127 (`services/gh-runner-macos/`, hackintosh via OpenCore, two interchangeable runners)
-- **Kubernetes:** k3s cluster — cp (200) + 3 workers (201/202/203, **12 GB / 4 cores each**), ArgoCD + dashboard in-cluster. **The only deployment target as of Sep 2026.**
+- **Kubernetes:** k3s cluster — cp (200) + 3 workers (201/202/203, **10 GB / 4 cores each**), ArgoCD + dashboard in-cluster. **The only deployment target as of Sep 2026.**
 - **AI/ML:** single GPU LXC 118 `ai` — llama.cpp via llama-swap (text + embeddings) and ComfyUI (images), see "## AI Stack" below and `services/ai/`
 - **Media:** Media server (104 — library on the 8 TB HDD, see `services/media/`), Immich photos (108), Calibre-web (120)
 - **Infra:** DNS (111), Traefik reverse proxy (114), S3 (100 — Garage v2.3.0 in Docker, single node,
@@ -192,7 +229,7 @@ When deploying a new service, clone the appropriate template based on whether th
 - **Docker Swarm (VMs):** ⚠️ **shut down Sep 2026, not deleted** — manager 210 + workers 211/212, see "## Docker Swarm" section below.
 - **Kubernetes (k3s, VMs):** Control-plane 200 (192.168.0.60) + workers 201/202/203 — see "## k3s Cluster" section below.
 - **Public edge:** Lightsail VPS 51.44.40.82 terminates TLS for `*.eduindev.com` and forwards over WireGuard to the in-cluster Traefik — see "## Public Edge" below. **frp is gone** (Oct 2026).
-- **Email:** takuteku.com + eduindev.com mail (one Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com, eduindev.com)" below and the `eduinlight-org/email-cd` repo.
+- **Email:** takuteku.com + eduindev.com + sddvault.com mail (one Stalwart + Bulwark) in k3s namespace `email`, outbound via Amazon SES — see "## Email (takuteku.com, eduindev.com, sddvault.com)" below and the `eduinlight-org/email-cd` repo.
 
 ---
 
@@ -434,8 +471,8 @@ Replaced the LXC-based swarm (formerly VMIDs 109/110/122) with VMs in 2026-04 to
 Built 2026-04 alongside Docker Swarm. Standalone k3s, not coupled with Swarm.
 
 - **Control plane:** VM 200 `k3s-cp-01` — **192.168.0.60** (k3s v1.34.6+k3s1, Debian 13), 4 GB / 2 cores
-- **Workers:** all three at **12 GB / 4 cores / 200 GB** (Sep 2026) — VM 201 `k3s-w-01` (.61),
-  VM 202 `k3s-w-02` (.62), VM 203 `k3s-w-03` (.63, added Sep 2026). Cluster total 40 GB RAM.
+- **Workers:** all three at **10 GB / 4 cores / 200 GB** (Oct 2026, cut from 12 after the RAM outage) — VM 201 `k3s-w-01` (.61),
+  VM 202 `k3s-w-02` (.62), VM 203 `k3s-w-03` (.63, added Sep 2026). Cluster total 34 GB RAM. Pods use only 2.4–3.4 GB per worker; the rest was guest page cache.
   The control plane is also on a 200 GB disk.
 - **Template:** VM 9000 `k3s-template` (Debian 13 cloud-init, reusable for any new VM)
 - **Pool:** `kubernete`
@@ -506,7 +543,8 @@ ssh admin@192.168.0.<N> "export K3S_URL=https://192.168.0.60:6443 K3S_TOKEN='$TO
 ```
 
 Then add a `wN` A record to `/etc/bind/zones/db.k3s.lan` on LXC 111, bump the zone serial, and
-`rndc reload k3s.lan`.
+`rndc reload k3s.lan`. Install the `k3s-node-cleanup` timer from `services/disk-cleanup/` too,
+or the new node piles up old images the way the others did.
 
 **Template 9000 does not carry this Mac's SSH key.** Its baked-in `authorized_keys` holds one
 key commented `light@light-pc`, so a fresh clone answers `Permission denied (publickey,password)`
@@ -595,18 +633,18 @@ Gotchas:
 
 ---
 
-## Email (takuteku.com, eduindev.com)
+## Email (takuteku.com, eduindev.com, sddvault.com)
 
-Self-hosted mail for **takuteku.com** and **eduindev.com**, built Oct 2026. Stalwart v0.16.26 (SMTP/IMAP/JMAP/CalDAV/
+Self-hosted mail for **takuteku.com**, **eduindev.com** and **sddvault.com**, built Oct 2026. Stalwart v0.16.26 (SMTP/IMAP/JMAP/CalDAV/
 CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by ArgoCD app
 `email-prod` from **`eduinlight-org/email-cd`** — that repo's README is the full runbook.
 
 | What | Where |
 |------|-------|
-| Webmail | https://webmail.takuteku.com, https://webmail.eduindev.com (same Bulwark) |
+| Webmail | https://webmail.eduindev.com (any domain's address signs in) |
 | Stalwart admin / JMAP / DAV | https://mail.takuteku.com (`/admin`) |
 | IMAP / submission / MX | mail.takuteku.com :993 / :465, :587 / :25 |
-| Mailboxes | `it@takuteku.com` (aliases `postmaster@`, `abuse@`, `dmarc@` on both domains), `support@takuteku.com`, `contact@eduindev.com` |
+| Mailboxes | `contact@`, `support@`, `it@` on all three domains — nine separate mailboxes; `postmaster@`, `abuse@`, `dmarc@` on every domain are aliases on `it@takuteku.com` |
 | Credentials | `secrets.local.md` (untracked); k8s Secrets `email/{stalwart,bulwark,stalwart-backup}`; admin + SES SMTP also in SSM Parameter Store `/email/takuteku/*` (eu-west-3, free SecureString) |
 | Backups | nightly 03:30 → Garage bucket `email-backups` (14 days) |
 
@@ -630,10 +668,23 @@ CardDAV) and Bulwark Webmail 1.15.0 run in k3s namespace `email`, deployed by Ar
   `--export`. The StatefulSet deliberately has no `replicas` field so ArgoCD selfHeal does not
   fight the scale-down.
 - The `takuteku.com` apex has no A record; nothing in mail needs one.
-- **eduindev.com is the same server**: a `Manual` domain in the plan whose MX and clients use
+- **eduindev.com is the same server**: a domain in the plan whose MX still points at
   `mail.takuteku.com`; its DNS is hand-written in the eduindev zone and SES verifies it separately.
-  Bulwark calls JMAP from the browser, so CORS for both webmail origins is a Traefik Middleware
-  (`email/stalwart-cors`), not a Stalwart header — Stalwart's static header can name one origin only.
+  **`mail.eduindev.com` has its own Let's Encrypt certificate** (Oct 2026, DNS-01 via DnsServer
+  `route53-eduindev`), so clients can use either hostname; Stalwart picks the certificate by SNI.
+  The `stalwart-route53` IAM user may change only the TXT records `_acme-challenge.mail.eduindev.com`
+  and `_smtp._tls.eduindev.com` in that zone, because DNS-01 forces `dnsManagement: Automatic` and
+  `publishRecords` cannot be empty (it publishes `tlsRpt` only). `mail.eduindev.com` needs its
+  explicit A record: the `*.eduindev.com` wildcard stops matching once `_acme-challenge.mail` exists.
+  Bulwark calls JMAP from the browser, so Stalwart sends CORS for `https://webmail.eduindev.com`
+  via `Http.responseHeaders` in the plan. That header names one origin only, which is why
+  `webmail.takuteku.com` was dropped (Oct 2026); a second webmail host would need a Traefik
+  `headers` Middleware with `accessControlAllowOriginList` instead.
+- **sddvault.com** (Oct 2026) was added the same way, entirely from the AWS CLI: SES identity +
+  `bounce.` MAIL FROM, `*@sddvault.com` in the `stalwart-ses` IAM policy, DNS in its Route 53 zone,
+  one `Domain` line in the plan. No `autoconfig`/`autodiscover` — the VPS wildcard only covers
+  `*.eduindev.com`. Run `stalwart-cli` from the dev box via `kubectl port-forward svc/stalwart` plus
+  `docker run ghcr.io/stalwartlabs/cli` (the image has no shell, so a sleeping pod will not work).
 
 ---
 
@@ -798,6 +849,11 @@ an `admin` account also exists for API use, with its password supplied via
 `GF_SECURITY_ADMIN_PASSWORD` in `/home/admin/.env` on the LXC (see `services/lgtm/.env.example`;
 value in `secrets.local.md`, untracked). Set
 `GF_AUTH_ANONYMOUS_ENABLED=false` in the compose environment to require login.
+
+**Email alerts** (Oct 2026) go through Stalwart: `GF_SMTP_HOST=mail.eduindev.com:465` (implicit TLS),
+signed in and sending as `it@eduindev.com`, with the mailbox password as `GF_SMTP_PASSWORD` in
+`.env`. Contact point `email-it` delivers to `it@eduindev.com`; attach it to a notification policy
+for alerts to use it.
 
 Point services at it with:
 

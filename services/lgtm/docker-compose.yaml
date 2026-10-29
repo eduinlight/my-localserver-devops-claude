@@ -3,6 +3,11 @@ services:
     image: grafana/otel-lgtm:latest
     container_name: lgtm
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "3"
     ports:
       - "3000:3000"   # Grafana UI
       - "4317:4317"   # OTLP gRPC ingest
@@ -15,6 +20,12 @@ services:
       - GF_SERVER_ROOT_URL=http://grafana.lan
       - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?set it in .env}
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=mail.eduindev.com:465
+      - GF_SMTP_USER=it@eduindev.com
+      - GF_SMTP_PASSWORD=${GF_SMTP_PASSWORD:?set it in .env}
+      - GF_SMTP_FROM_ADDRESS=it@eduindev.com
+      - GF_SMTP_FROM_NAME=Grafana
       - ENABLE_LOGS_ALL=true
     volumes:
       - lgtm-data:/data

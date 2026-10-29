@@ -1,0 +1,9 @@
+[Unit]
+Description=Trim running LXCs so freed blocks return to the thin pool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pve-guest-trim
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h
